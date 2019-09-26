@@ -64,8 +64,9 @@ class DownloadManager:
         self._interrupted = False
 
     def shutdown(self):
+        threads = set(self._workers.values())
         self._interrupted = True
-        for thread in self._workers.values():
+        for thread in threads:
             thread.join()
 
     def add_video(self, video):
