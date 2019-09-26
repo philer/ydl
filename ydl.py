@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.7
+#!/usr/bin/env python3.8
 # -*- coding: utf-8 -*-
 """
 test vine (spider):
@@ -6,34 +6,30 @@ https://www.youtube.com/watch?v=RwJe8KfPCEQ
 
 
 TODO:
-download:
-    - 1 pool per host (done)
-    - maximum parallel downloads overall
-playback:
-    - finish order vs. adding order
-    - delete option after play
-    - play/delete arbitrary
-    - countdown timer for next playback
+- tests
+- delete option
+- video playback:
+    + finish order vs. adding order
+    + delete option after play
+    + play arbitrary (separate of queue)
+    + countdown timer for next playback
 """
 
 import os
 import sys
 import signal
 from collections import defaultdict
-
+from itertools import count
 from urllib.parse import urlparse
-from pathlib import Path
-
 import threading
-from queue import SimpleQueue
 
-import urwid
 from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
                    ListBox, MainLoop, Pile, Text, WidgetWrap)
 import youtube_dl
 
 
-POOL_SIZE = 3
+MAX_POOL_SIZE = 5
+MAX_HOST_POOL_SIZE = 3
 
 
 class MuteLogger:
@@ -44,84 +40,89 @@ class MuteLogger:
 ydl_settings = {
     "format": "best",
     "noplaylist": True,
+    "call_home": False,
+    "cachedir": False,
+    # "download_archive": "youtube_dl_archive",
     "logger": MuteLogger(),
     "outtmpl": "%(extractor)s-%(id)s_%(title)s.%(ext)s"
-    # "outtmpl": Path("~/ydl").expanduser() / youtube_dl.DEFAULT_OUTTMPL,
     # "outtmpl": "/tmp/ydl/" + youtube_dl.DEFAULT_OUTTMPL,
 }
 
+class Interrupt(Exception):
+    """Used to break out of youtube-dl's blocking download via hook."""
+    pass
 
-class Pool:
-    def __init__(self, size=POOL_SIZE):
-        self.queue = SimpleQueue()
-        self.workers = []
-        for _ in range(size):
-            worker = Worker(self.queue)
-            worker.start()
-            self.workers.append(worker)
-
-    def add_job(self, job):
-        self.queue.put(job)
+class DownloadManager:
+    """Manages video download workers and parallel connections per host."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._videos = []
+        self._worker_ids = iter(count())
+        self._workers = dict()
+        self._per_host = defaultdict(int)
+        self._interrupted = False
 
     def shutdown(self):
-        for worker in self.workers:
-            worker.interrupt()
-            self.queue.put(None)  # resolve blocking queue.get()
-
-    def join(self):
-        for worker in self.workers:
-            worker.join()
-
-
-class Worker(threading.Thread):
-    def __init__(self, queue, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.queue = queue
-        self._ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=[self._progress_hook]))
-        self._current_job = None
-        self._interrupted = False
-        self.working = False
-
-    def interrupt(self):
         self._interrupted = True
+        for thread in self._workers.values():
+            thread.join()
 
-    class Interrupt(Exception):
-        """Used to break out of youtube-dl's blocking download via hook."""
-        pass
+    def add_video(self, video):
+        with self._lock:
+            self._videos.append(video)
+            if len(self._workers) < MAX_POOL_SIZE:
+                worker_id = next(self._worker_ids)
+                thread = threading.Thread(target=self._work, args=(worker_id,))
+                self._workers[worker_id] = thread
+                thread.start()
 
-    def _progress_hook(self, data):
-        if self._interrupted:
-            raise self.Interrupt()
-        else:
-            self._current_job.set_info(**data)
+    def _next(self, finished=None):
+        with self._lock:
+            if finished:
+                self._per_host[finished.hostname] -= 1
+            for i, video in enumerate(self._videos):
+                if self._per_host[video.hostname] < MAX_HOST_POOL_SIZE:
+                    self._per_host[video.hostname] += 1
+                    del self._videos[i]
+                    return video
 
-    def run(self):
-        self._current_job = self.queue.get()
-        while not self._interrupted:
-            self.working = True
-            self._current_job.set_info(status="downloading")
-            try:
-                self._ydl.download([self._current_job.url])
-            except self.Interrupt:
-                break
-            except youtube_dl.utils.DownloadError:
-                self._current_job.set_info(status="error")
-            self.working = False
-            self._current_job = self.queue.get()
+    def _work(self, worker_id):
+        """Perform actual downloads - this is run in a thread."""
+        def progress_hook(data):
+            """Called by youtube-dl periodically - used to break out when we want to quit."""
+            if self._interrupted:
+                raise Interrupt()
+            video.set_info(**data)
+
+        ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=[progress_hook]))
+
+        try:
+            video = None
+            while video := self._next(finished=video):
+                video.set_info(status="downloading")
+                try:
+                    ydl.download([video.url])
+                except youtube_dl.utils.DownloadError:
+                    video.set_info(status="error")
+        except Interrupt:
+            pass
+        del self._workers[worker_id]
 
 
-class Job(WidgetWrap):
-    """Nasty mix of job data store and ui widget."""
-
+class Video(WidgetWrap):
     _instances = dict()
 
     status_icon = {
         "pending": " ⧗ ",
-        "duplicate": " 2 ",
+        "duplicate": " = ",
         "downloading": " ⬇ ",
         "finished": " ✔ ",
         "error": " ⨯ ",
     }
+
+    @property
+    def hostname(self):
+        return urlparse(self.url).hostname
 
     @property
     def status(self):
@@ -138,12 +139,13 @@ class Job(WidgetWrap):
                 self._status_widget.set_text(self.status_icon[status])
             self._ui._loop.draw_screen()
 
-    def __init__(self, pool, ui, url):
-        self._pool = pool
+    def __init__(self, ui, download_manager, url):
         self._ui = ui
+        self._download_manager = download_manager
         self.url = url
         self.progress = 0
         self._status = "pending"
+
         self._status_widget = Text(self.status_icon["pending"])
         self._title_widget = Text(url, wrap='clip')
         columns = [
@@ -161,15 +163,14 @@ class Job(WidgetWrap):
             meta = ydl.extract_info(self.url, download=False)
         except youtube_dl.utils.DownloadError:
             self.status = "error"
-            self._instances[self.url] = self
+            # self._instances[self.url] = self
             return
 
-        duplicate = meta["id"] in self._instances
-        if duplicate:
+        if meta["id"] in self._instances:
             self.status = "duplicate"
         else:
             self._instances[meta["id"]] = self
-            self._pool.add_job(self)
+            self._download_manager.add_video(self)
         with self._ui.draw_lock:
             self._title_widget.set_text(f"{meta['id']} - {meta['title']}")
 
@@ -201,7 +202,6 @@ class Job(WidgetWrap):
             self.progress = 0
         self.status = status
 
-
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
         title_text = self._title_widget.text.strip().ljust(size[0])
@@ -223,12 +223,15 @@ class Ui:
         ("prompt",          "light green", ""),
     ]
 
-    def __init__(self):
+    def __init__(self, download_manager):
+        self._download_manager = download_manager
+
         self._input = Edit(caption=("prompt", "⟩ "))
-        self._downloads = ListBox([])
+        self._videos = ListBox([])
         footer = Pile([AttrMap(Divider("─"), "divider"), self._input])
-        self._root = Frame(body=self._downloads, footer=footer)
+        self._root = Frame(body=self._videos, footer=footer)
         self._root.focus_position = "footer"
+
         self._loop = MainLoop(widget=self._root,
                               palette=self.palette,
                               unhandled_input=self._handle_global_input)
@@ -239,14 +242,9 @@ class Ui:
 
     def run_loop(self):
         signal.signal(signal.SIGINT, self.halt_loop)  # should this be reset?
-        self._pools = defaultdict(Pool)
         self._loop.run()
 
     def halt_loop(self, *_):
-        for pool in self._pools.values():
-            pool.shutdown()
-        for pool in self._pools.values():
-            pool.join()
         raise ExitMainLoop()
 
     def _handle_global_input(self, key):
@@ -255,25 +253,27 @@ class Ui:
         elif key == 'enter' and self._input.edit_text:
             for url in map(str.strip, self._input.edit_text.split(sep="\n")):
                 if url:
-                    hostname = urlparse(url).hostname
-                    job = Job(self._pools[hostname], self, url)
+                    video = Video(self, self._download_manager, url)
                     with self.draw_lock:
-                        self._downloads.body.append(job)
+                        self._videos.body.append(video)
             self._input.edit_text = ""
 
+def main():
+    dlmgr = DownloadManager()
+    ui = Ui(dlmgr)
+    ui.run_loop()
+    dlmgr.shutdown()
+
+    # stats = defaultdict(int)
+    # print("Unfinished:")
+    # for video in ...:
+    #     stats[video.status] += 1
+    #     if video.status in {"pending", "downloading"}:
+    #         print(video.url)
+    # print(f"Finished {stats['finished']}/{sum(stats.values())} jobs "
+    #       f"({stats['pending']} pending, "
+    #       f"{stats['downloading']} running, "
+    #       f"{stats['error']} failed).")
 
 if __name__ == "__main__":
-
-    ui = Ui()
-    ui.run_loop()
-
-    stats = {s: 0 for s in ("pending", "downloading", "finished",  "error")}
-    print("Unfinished:")
-    for job in Job._instances.values():
-        stats[job.status] += 1
-        if job.status in {"pending", "downloading"}:
-            print(job.url)
-    print(f"Finished {stats['finished']}/{sum(stats.values())} jobs "
-          f"({stats['pending']} pending, "
-          f"{stats['downloading']} running, "
-          f"{stats['error']} failed).")
+    main()
