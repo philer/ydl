@@ -26,6 +26,7 @@ import threading
 from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
                    ListBox, MainLoop, Pile, Text, WidgetWrap)
 import youtube_dl
+import pyperclip
 
 
 MAX_POOL_SIZE = 5
@@ -250,13 +251,18 @@ class Ui:
     def _handle_global_input(self, key):
         if key == 'esc':
             self.halt_loop()
+        elif key == 'ctrl v':
+            self._handle_urls(pyperclip.paste())
         elif key == 'enter' and self._input.edit_text:
-            for url in map(str.strip, self._input.edit_text.split(sep="\n")):
-                if url:
-                    video = Video(self, self._download_manager, url)
-                    with self.draw_lock:
-                        self._videos.body.append(video)
+            self._handle_urls(self._input.edit_text)
             self._input.edit_text = ""
+
+    def _handle_urls(self, text):
+        for url in map(str.strip, text.split(sep="\n")):
+            if url:
+                video = Video(self, self._download_manager, url)
+                with self.draw_lock:
+                    self._videos.body.append(video)
 
 def main():
     dlmgr = DownloadManager()
