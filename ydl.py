@@ -55,7 +55,9 @@ class Interrupt(Exception):
 
 class DownloadManager:
     """Manages video download workers and parallel connections per host."""
-    def __init__(self):
+
+    def __init__(self, core):
+        self._core = core
         self._lock = threading.Lock()
         self._videos = []
         self._worker_ids = iter(count())
@@ -112,8 +114,7 @@ class DownloadManager:
 
 
 class Video(WidgetWrap):
-    _instances = dict()
-
+    """Ugly mix of data model and view widget"""
     status_icon = {
         "pending": " ⧗ ",
         "duplicate": " = ",
@@ -141,9 +142,8 @@ class Video(WidgetWrap):
                 self._status_widget.set_text(self.status_icon[status])
             self._ui._loop.draw_screen()
 
-    def __init__(self, ui, download_manager, url):
+    def __init__(self, ui, url):
         self._ui = ui
-        self._download_manager = download_manager
         self.url = url
         self.progress = 0
         self._status = "pending"
@@ -157,27 +157,27 @@ class Video(WidgetWrap):
         ]
         self._root = AttrMap(Columns(columns, dividechars=1), "pending")
         super().__init__(self._root)
-        threading.Thread(target=self._prepare).start()
 
-    def _prepare(self):
+    def prepare_meta(self):
+        """
+        Download meta data for this video. Some of the classes functionality
+        will not be available until this is done.
+        """
         ydl = youtube_dl.YoutubeDL(ydl_settings)
         try:
             meta = ydl.extract_info(self.url, download=False)
         except youtube_dl.utils.DownloadError:
             self.status = "error"
-            # self._instances[self.url] = self
-            return
-
-        if meta["id"] in self._instances:
-            self.status = "duplicate"
+            self.id = self.url
         else:
-            self._instances[meta["id"]] = self
-            self._download_manager.add_video(self)
-        with self._ui.draw_lock:
-            self._title_widget.set_text(f"{meta['id']} - {meta['title']}")
+            for key in "id", "title", "ext":
+                self.__dict__.setdefault(key, meta[key])
+            with self._ui.draw_lock:
+                self._title_widget.set_text(f"{self.id} - {self.title}")
 
     def set_info(self, status, downloaded_bytes=0, total_bytes=None,
                  total_bytes_estimate=None, **kwargs):
+        # from https://github.com/ytdl-org/youtube-dl/blob/master/youtube_dl/YoutubeDL.py
         # * status: One of "downloading", "error", or "finished".
         #           Check this first and ignore unknown values.
         # If status is one of "downloading", or "finished", the
@@ -225,8 +225,8 @@ class Ui:
         ("prompt",          "light green", ""),
     ]
 
-    def __init__(self, download_manager):
-        self._download_manager = download_manager
+    def __init__(self, core):
+        self._core = core
 
         self._input = Edit(caption=("prompt", "⟩ "))
         self._videos = ListBox([])
@@ -249,6 +249,10 @@ class Ui:
     def halt_loop(self, *_):
         raise ExitMainLoop()
 
+    def add_video(self, video):
+        with self.draw_lock:
+            self._videos.body.append(video)
+
     def _handle_global_input(self, key):
         if key == 'esc':
             self.halt_loop()
@@ -259,28 +263,46 @@ class Ui:
             self._input.edit_text = ""
 
     def _handle_urls(self, text):
+        """Extract valid urls from user input and pass them on."""
         for url in map(str.strip, text.split(sep="\n")):
             if url:
-                video = Video(self, self._download_manager, url)
-                with self.draw_lock:
-                    self._videos.body.append(video)
+                self._core.create_video(url)
 
-def main():
-    dlmgr = DownloadManager()
-    ui = Ui(dlmgr)
-    ui.run_loop()
-    dlmgr.shutdown()
+class YDL:
+    """Core controller"""
+    def __init__(self):
+        self.videos = dict()
+        self.downloads = DownloadManager(self)
+        self.ui = Ui(self)
 
-    # stats = defaultdict(int)
-    # print("Unfinished:")
-    # for video in ...:
-    #     stats[video.status] += 1
-    #     if video.status in {"pending", "downloading"}:
-    #         print(video.url)
-    # print(f"Finished {stats['finished']}/{sum(stats.values())} jobs "
-    #       f"({stats['pending']} pending, "
-    #       f"{stats['downloading']} running, "
-    #       f"{stats['error']} failed).")
+        # stats = defaultdict(int)
+        # print("Unfinished:")
+        # for video in ...:
+        #     stats[video.status] += 1
+        #     if video.status in {"pending", "downloading"}:
+        #         print(video.url)
+        # print(f"Finished {stats['finished']}/{sum(stats.values())} jobs "
+        #       f"({stats['pending']} pending, "
+        #       f"{stats['downloading']} running, "
+        #       f"{stats['error']} failed).")
+
+    def run_loop(self):
+        self.ui.run_loop()
+        self.downloads.shutdown()
+
+    def create_video(self, url):
+        video = Video(self.ui, url)
+        thread = threading.Thread(target=self._prepare_video, args=(video,))
+        thread.start()
+        self.ui.add_video(video)
+
+    def _prepare_video(self, video):
+        video.prepare_meta()  # blocks for a short while
+        if video.id in self.videos:
+            video.status = "duplicate"
+        else:
+            self.videos[video.id] = video
+            self.downloads.add_video(video)
 
 if __name__ == "__main__":
-    main()
+    YDL().run_loop()
