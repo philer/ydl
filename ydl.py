@@ -21,11 +21,14 @@ import signal
 from collections import defaultdict
 from itertools import count
 from urllib.parse import urlparse
+
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
-                   ListBox, MainLoop, Pile, Text, WidgetWrap)
+                   ListBox, MainLoop, Pile, Text, WidgetWrap,
+                   AsyncioEventLoop)
 import youtube_dl
 import pyperclip
 
@@ -69,23 +72,28 @@ class DownloadManager:
         self._interrupted = True
         self._executor.shutdown(wait=True)
 
-    def add_video(self, video):
+    async def download(self, video):
+        done = asyncio.Event()
         with self._lock:
-            self._videos.append(video)
+            self._videos.append((video, done))
+
+        # submit one job. it may not be the one taking care of this video.
         future = self._executor.submit(self._work)
         if e := future.exception():
             raise e
+        await done.wait()
 
     def _next(self):
         with self._lock:
-            for i, video in enumerate(self._videos):
+            for i, (video, done) in enumerate(self._videos):
                 if self._per_host[video.hostname] < MAX_HOST_POOL_SIZE:
                     self._per_host[video.hostname] += 1
                     del self._videos[i]
-                    return video
+                    return video, done
 
     def _finished(self, video):
-        self._per_host[video.hostname] -= 1
+        with self._lock:
+            self._per_host[video.hostname] -= 1
 
     def _work(self):
         """Perform actual downloads - this is run in a thread."""
@@ -99,7 +107,7 @@ class DownloadManager:
 
         ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=[progress_hook]))
 
-        video = self._next()
+        video, done = self._next()
         video.set_info(status="downloading")
         try:
             ydl.download([video.url])
@@ -108,6 +116,7 @@ class DownloadManager:
         except Interrupt:
             return
         self._finished(video)
+        done.set()  # No idea if this is okay. asyncio.Event is not threadsafe.
 
 
 class Video(WidgetWrap):
@@ -223,7 +232,7 @@ class Ui:
         ("prompt",          "light green", ""),
     ]
 
-    def __init__(self, core):
+    def __init__(self, core, aio_loop):
         self._core = core
 
         self._input = Edit(caption=("prompt", "⟩ "))
@@ -234,6 +243,7 @@ class Ui:
 
         self._loop = MainLoop(widget=self._root,
                               palette=self.palette,
+                              event_loop=AsyncioEventLoop(loop=aio_loop),
                               unhandled_input=self._handle_global_input)
         self._loop.screen.set_terminal_properties(
             colors=256, bright_is_bold=False, has_underline=True)
@@ -263,14 +273,17 @@ class Ui:
         """Extract valid urls from user input and pass them on."""
         for url in map(str.strip, text.split(sep="\n")):
             if url:
-                self._core.create_video(url)
+                future = self._core.create_video(url)
+                asyncio.get_running_loop().create_task(future)
 
 class YDL:
     """Core controller"""
     def __init__(self):
         self.videos = dict()
+        self._aio_loop = asyncio.get_event_loop()
+        self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
+        self.ui = Ui(self, self._aio_loop)
         self.downloads = DownloadManager(self)
-        self.ui = Ui(self)
 
         # stats = defaultdict(int)
         # print("Unfinished:")
@@ -284,25 +297,23 @@ class YDL:
         #       f"{stats['error']} failed).")
 
     def run_loop(self):
-        signal.signal(signal.SIGINT, self.ui.halt_loop)  # should this be reset?
+        self._aio_loop.add_signal_handler(signal.SIGINT, self.ui.halt_loop)
         self.ui.run_loop()
+        self._aio_loop.remove_signal_handler(signal.SIGINT)
         self.downloads.shutdown()
 
-    def create_video(self, url):
+    async def create_video(self, url):
         video = Video(self.ui, url)
-        thread = threading.Thread(target=self._prepare_video, args=(video,))
-        thread.start()
         self.ui.add_video(video)
-
-    def _prepare_video(self, video):
-        video.prepare_meta()  # blocks for a short while
+        await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
         if video.status == "error":
             return
         if video.id in self.videos:
             video.status = "duplicate"
         else:
             self.videos[video.id] = video
-            self.downloads.add_video(video)
+            await self.downloads.download(video)
+
 
 if __name__ == "__main__":
     YDL().run_loop()
