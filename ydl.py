@@ -22,6 +22,7 @@ from collections import defaultdict
 from itertools import count
 from urllib.parse import urlparse
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
                    ListBox, MainLoop, Pile, Text, WidgetWrap)
@@ -58,40 +59,38 @@ class DownloadManager:
 
     def __init__(self, core):
         self._core = core
-        self._lock = threading.Lock()
         self._videos = []
-        self._worker_ids = iter(count())
-        self._workers = dict()
+        self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
+        self._lock = threading.Lock()
         self._per_host = defaultdict(int)
         self._interrupted = False
 
     def shutdown(self):
-        threads = set(self._workers.values())
         self._interrupted = True
-        for thread in threads:
-            thread.join()
+        self._executor.shutdown(wait=True)
 
     def add_video(self, video):
         with self._lock:
             self._videos.append(video)
-            if len(self._workers) < MAX_POOL_SIZE:
-                worker_id = next(self._worker_ids)
-                thread = threading.Thread(target=self._work, args=(worker_id,))
-                self._workers[worker_id] = thread
-                thread.start()
+        future = self._executor.submit(self._work)
+        if e := future.exception():
+            raise e
 
-    def _next(self, finished=None):
+    def _next(self):
         with self._lock:
-            if finished:
-                self._per_host[finished.hostname] -= 1
             for i, video in enumerate(self._videos):
                 if self._per_host[video.hostname] < MAX_HOST_POOL_SIZE:
                     self._per_host[video.hostname] += 1
                     del self._videos[i]
                     return video
 
-    def _work(self, worker_id):
+    def _finished(self, video):
+        self._per_host[video.hostname] -= 1
+
+    def _work(self):
         """Perform actual downloads - this is run in a thread."""
+
+        # TODO move setup code to ThreadPoolExecutor initializer
         def progress_hook(data):
             """Called by youtube-dl periodically - used to break out when we want to quit."""
             if self._interrupted:
@@ -100,17 +99,15 @@ class DownloadManager:
 
         ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=[progress_hook]))
 
+        video = self._next()
+        video.set_info(status="downloading")
         try:
-            video = None
-            while video := self._next(finished=video):
-                video.set_info(status="downloading")
-                try:
-                    ydl.download([video.url])
-                except youtube_dl.utils.DownloadError:
-                    video.set_info(status="error")
+            ydl.download([video.url])
+        except youtube_dl.utils.DownloadError:
+            video.set_info(status="error")
         except Interrupt:
-            pass
-        del self._workers[worker_id]
+            return
+        self._finished(video)
 
 
 class Video(WidgetWrap):
@@ -174,6 +171,7 @@ class Video(WidgetWrap):
                 self.__dict__.setdefault(key, meta[key])
             with self._ui.draw_lock:
                 self._title_widget.set_text(f"{self.id} - {self.title}")
+                self._ui._loop.draw_screen()
 
     def set_info(self, status, downloaded_bytes=0, total_bytes=None,
                  total_bytes_estimate=None, **kwargs):
@@ -243,7 +241,6 @@ class Ui:
         self.draw_lock = threading.RLock()
 
     def run_loop(self):
-        signal.signal(signal.SIGINT, self.halt_loop)  # should this be reset?
         self._loop.run()
 
     def halt_loop(self, *_):
@@ -287,6 +284,7 @@ class YDL:
         #       f"{stats['error']} failed).")
 
     def run_loop(self):
+        signal.signal(signal.SIGINT, self.ui.halt_loop)  # should this be reset?
         self.ui.run_loop()
         self.downloads.shutdown()
 
@@ -298,6 +296,8 @@ class YDL:
 
     def _prepare_video(self, video):
         video.prepare_meta()  # blocks for a short while
+        if video.status == "error":
+            return
         if video.id in self.videos:
             video.status = "duplicate"
         else:
