@@ -60,8 +60,7 @@ class Interrupt(Exception):
 class DownloadManager:
     """Manages video download workers and parallel connections per host."""
 
-    def __init__(self, core):
-        self._core = core
+    def __init__(self):
         self._videos = []
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self._lock = threading.Lock()
@@ -220,6 +219,24 @@ class Video(WidgetWrap):
         return self._root.render(size, focus)
 
 
+class CustomEventLoop(AsyncioEventLoop):
+    """
+    Urwid's AsyncioEventLoop's exception handling is broken.
+    This code is from https://github.com/urwid/urwid/issues/235#issuecomment-458483802
+    """
+    def _exception_handler(self, loop, context):
+        exc = context.get('exception')
+        if exc:
+            loop.stop()
+            if not isinstance(exc, ExitMainLoop):
+                # Store the exc_info so we can re-raise after the loop stops
+                import sys
+                self._exc_info = sys.exc_info()
+                if self._exc_info == (None, None, None):
+                    self._exc_info = (type(exc), exc, exc.__traceback__)
+        else:
+            loop.default_exception_handler(context)
+
 class Ui:
     palette = [
         ("pending",         "",            "", "", "g70",  ""),
@@ -234,6 +251,7 @@ class Ui:
 
     def __init__(self, core, aio_loop):
         self._core = core
+        self._aio_loop = aio_loop
 
         self._input = Edit(caption=("prompt", "⟩ "))
         self._videos = ListBox([])
@@ -243,7 +261,7 @@ class Ui:
 
         self._loop = MainLoop(widget=self._root,
                               palette=self.palette,
-                              event_loop=AsyncioEventLoop(loop=aio_loop),
+                              event_loop=CustomEventLoop(loop=aio_loop),
                               unhandled_input=self._handle_global_input)
         self._loop.screen.set_terminal_properties(
             colors=256, bright_is_bold=False, has_underline=True)
@@ -272,9 +290,8 @@ class Ui:
     def _handle_urls(self, text):
         """Extract valid urls from user input and pass them on."""
         for url in map(str.strip, text.split(sep="\n")):
-            if url:
-                future = self._core.create_video(url)
-                asyncio.get_running_loop().create_task(future)
+            if url:  # maybe check URL with a regex?
+                self._aio_loop.create_task(self._core.create_video(url))
 
 class YDL:
     """Core controller"""
