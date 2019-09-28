@@ -118,6 +118,33 @@ class DownloadManager:
         done.set()  # No idea if this is okay. asyncio.Event is not threadsafe.
 
 
+class PlaylistManager:
+    def __init__(self, delay=3):
+        self.delay = delay
+        self._videos = asyncio.Queue()
+        self._interrupted = False
+
+    async def add_video(self, video):
+        await self._videos.put(video)
+
+    def start(self):
+        asyncio.get_event_loop().create_task(self._run())
+
+    def stop(self):
+        self._interrupted = True
+
+    async def _run(self):
+        while not self._interrupted:
+            video = await self._videos.get()
+            devnull = open(os.devnull, 'w')
+            process = await asyncio.create_subprocess_exec("mpv", video.filename,
+                                                           stdout=devnull,
+                                                           stderr=devnull)
+            await process.wait()
+            self._videos.task_done()
+            await asyncio.sleep(self.delay)
+
+
 class Video(WidgetWrap):
     """Ugly mix of data model and view widget"""
     status_icon = {
@@ -177,6 +204,7 @@ class Video(WidgetWrap):
         else:
             for key in "id", "title", "ext":
                 self.__dict__.setdefault(key, meta[key])
+            self.filename = "{extractor}-{id}_{title}.{ext}".format_map(meta)
             with self._ui.draw_lock:
                 self._title_widget.set_text(f"{self.id} - {self.title}")
                 self._ui._loop.draw_screen()
@@ -300,24 +328,18 @@ class YDL:
         self._aio_loop = asyncio.get_event_loop()
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self.ui = Ui(self, self._aio_loop)
-        self.downloads = DownloadManager(self)
-
-        # stats = defaultdict(int)
-        # print("Unfinished:")
-        # for video in ...:
-        #     stats[video.status] += 1
-        #     if video.status in {"pending", "downloading"}:
-        #         print(video.url)
-        # print(f"Finished {stats['finished']}/{sum(stats.values())} jobs "
-        #       f"({stats['pending']} pending, "
-        #       f"{stats['downloading']} running, "
-        #       f"{stats['error']} failed).")
+        self.downloads = DownloadManager()
+        self.playlist = PlaylistManager()
 
     def run_loop(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.ui.halt_loop)
-        self.ui.run_loop()
-        self._aio_loop.remove_signal_handler(signal.SIGINT)
-        self.downloads.shutdown()
+        try:
+            self.playlist.start()
+            self.ui.run_loop()
+        finally:
+            self._aio_loop.remove_signal_handler(signal.SIGINT)
+            self.playlist.stop()
+            self.downloads.shutdown()
 
     async def create_video(self, url):
         video = Video(self.ui, url)
@@ -330,6 +352,7 @@ class YDL:
         else:
             self.videos[video.id] = video
             await self.downloads.download(video)
+        await self.playlist.add_video(video)
 
 
 if __name__ == "__main__":
