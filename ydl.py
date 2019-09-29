@@ -1,14 +1,20 @@
 #!/usr/bin/env python3.8
 # -*- coding: utf-8 -*-
-"""
+"""YDL - An interactive CLI for youtube-dl
+
+Usage: ydl [-p | -h]
+
+Options:
+    -p --play   Automatically play videos once they have finished downloading
+    -h --help   Show this help message and exit.
+
 test vine (spider):
 https://www.youtube.com/watch?v=RwJe8KfPCEQ
 
-
 TODO:
-- tests
-- delete option
-- video playback:
+* tests
+* delete option
+* video playback:
     + finish order vs. adding order
     + delete option after play
     + play arbitrary (separate of queue)
@@ -27,6 +33,7 @@ import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from docopt import docopt
 from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
                    ListBox, MainLoop, Pile, Text, WidgetWrap,
                    AsyncioEventLoop)
@@ -315,13 +322,13 @@ class Ui:
 
 class YDL:
     """Core controller"""
-    def __init__(self):
+    def __init__(self, play=True):
         self.videos = dict()
         self._aio_loop = asyncio.get_event_loop()
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self.ui = Ui(self, self._aio_loop)
         self.downloads = DownloadManager()
-        self.playlist = PlaylistManager()
+        self.playlist = PlaylistManager() if play else None
 
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
@@ -331,7 +338,8 @@ class YDL:
             self._aio_loop.remove_signal_handler(signal.SIGINT)
 
     def shutdown(self):
-        self.playlist.shutdown()
+        if self.playlist:
+            self.playlist.shutdown()
         self.downloads.shutdown()
         self.ui.halt_loop()
 
@@ -346,8 +354,10 @@ class YDL:
         else:
             self.videos[video.id] = video
             await self.downloads.download(video)
-        await self.playlist.add_video(video)
+        if self.playlist:
+            await self.playlist.add_video(video)
 
 
 if __name__ == "__main__":
-    YDL().run()
+    args = docopt(__doc__, version="0.0.1")
+    YDL(play=args["--play"]).run()
