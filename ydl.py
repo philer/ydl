@@ -77,9 +77,7 @@ class DownloadManager:
             self._videos.append((video, done))
 
         # submit one job. it may not be the one taking care of this video.
-        future = self._executor.submit(self._work)
-        if e := future.exception():
-            raise e
+        asyncio.get_running_loop().run_in_executor(self._executor, self._work)
         await done.wait()
 
     def _next(self):
