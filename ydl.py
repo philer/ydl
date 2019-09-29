@@ -33,7 +33,8 @@ from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
 import youtube_dl
 import pyperclip
 
-
+VIDEO_PLAYER = "/usr/bin/mpv"
+VIDEO_DELAY = 2
 MAX_POOL_SIZE = 5
 MAX_HOST_POOL_SIZE = 3
 
@@ -103,28 +104,33 @@ class DownloadManager:
 
 
 class PlaylistManager:
-    def __init__(self, delay=3):
+    def __init__(self, delay=VIDEO_DELAY):
         self.delay = delay
         self._videos = asyncio.Queue()
-        self._interrupted = False
+        self._task = None
+        self._process = None
 
     async def add_video(self, video):
         await self._videos.put(video)
+        if self._task is None:
+            self._task = asyncio.create_task(self._run())
 
-    def start(self):
-        asyncio.get_event_loop().create_task(self._run())
-
-    def stop(self):
-        self._interrupted = True
+    def shutdown(self):
+        if self._task:
+            self._task.cancel()
+        if self._process:
+            self._process.terminate()
 
     async def _run(self):
-        while not self._interrupted:
+        while True:
             video = await self._videos.get()
-            devnull = open(os.devnull, 'w')
-            process = await asyncio.create_subprocess_exec("mpv", video.filename,
+            with open(os.devnull, 'w') as devnull:
+                proc_task = asyncio.create_subprocess_exec(VIDEO_PLAYER,
+                                                           video.filename,
                                                            stdout=devnull,
                                                            stderr=devnull)
-            await process.wait()
+                self._process = await asyncio.shield(proc_task)
+                await self._process.wait()
             self._videos.task_done()
             await asyncio.sleep(self.delay)
 
@@ -294,7 +300,7 @@ class Ui:
 
     def _handle_global_input(self, key):
         if key == 'esc':
-            self.halt_loop()
+            self._core.shutdown()
         elif key == 'ctrl v':
             self._handle_urls(pyperclip.paste())
         elif key == 'enter' and self._input.edit_text:
@@ -317,15 +323,17 @@ class YDL:
         self.downloads = DownloadManager()
         self.playlist = PlaylistManager()
 
-    def run_loop(self):
-        self._aio_loop.add_signal_handler(signal.SIGINT, self.ui.halt_loop)
+    def run(self):
+        self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
         try:
-            self.playlist.start()
             self.ui.run_loop()
         finally:
             self._aio_loop.remove_signal_handler(signal.SIGINT)
-            self.playlist.stop()
-            self.downloads.shutdown()
+
+    def shutdown(self):
+        self.playlist.shutdown()
+        self.downloads.shutdown()
+        self.ui.halt_loop()
 
     async def create_video(self, url):
         video = Video(self.ui, url)
@@ -342,4 +350,4 @@ class YDL:
 
 
 if __name__ == "__main__":
-    YDL().run_loop()
+    YDL().run()
