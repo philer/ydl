@@ -20,6 +20,7 @@ import sys
 import signal
 from collections import defaultdict
 from itertools import count
+from functools import partial
 from urllib.parse import urlparse
 
 import asyncio
@@ -61,59 +62,44 @@ class DownloadManager:
     """Manages video download workers and parallel connections per host."""
 
     def __init__(self):
-        self._videos = []
-        self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
-        self._lock = threading.Lock()
-        self._per_host = defaultdict(int)
+        self._executors = defaultdict(partial(ThreadPoolExecutor, max_workers=MAX_HOST_POOL_SIZE))
+        self._max_workers_sem = asyncio.BoundedSemaphore(value=MAX_POOL_SIZE)
         self._interrupted = False
+
+    async def download(self, video):
+        async with self._max_workers_sem:
+            if self._interrupted:
+                return
+            ex = self._executors[video.hostname]
+            await asyncio.get_running_loop().run_in_executor(ex, self._work, video)
 
     def shutdown(self):
         self._interrupted = True
-        self._executor.shutdown(wait=True)
+        for ex in self._executors.values():
+            ex.shutdown(wait=True)
 
-    async def download(self, video):
-        done = asyncio.Event()
-        with self._lock:
-            self._videos.append((video, done))
+    def _raise_interrupt(self, _):
+        """Called by youtube-dl periodically - used to break out when we want to quit."""
+        if self._interrupted:
+            raise Interrupt()
 
-        # submit one job. it may not be the one taking care of this video.
-        asyncio.get_running_loop().run_in_executor(self._executor, self._work)
-        await done.wait()
-
-    def _next(self):
-        with self._lock:
-            for i, (video, done) in enumerate(self._videos):
-                if self._per_host[video.hostname] < MAX_HOST_POOL_SIZE:
-                    self._per_host[video.hostname] += 1
-                    del self._videos[i]
-                    return video, done
-
-    def _finished(self, video):
-        with self._lock:
-            self._per_host[video.hostname] -= 1
-
-    def _work(self):
+    def _work(self, video):
         """Perform actual downloads - this is run in a thread."""
 
-        # TODO move setup code to ThreadPoolExecutor initializer
-        def progress_hook(data):
-            """Called by youtube-dl periodically - used to break out when we want to quit."""
-            if self._interrupted:
-                raise Interrupt()
-            video.set_info(**data)
+        # Note: I'd like to create only one YoutubeDL instance per thread
+        # using ThreadPoolExecutor's initializer argument.
+        # However while YoutubeDL.add_progress_hook exists, there is no
+        # equivalent method to remove video.set_info once we're done.
+        hooks = [self._raise_interrupt, video.set_info]
+        ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=hooks))
 
-        ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=[progress_hook]))
-
-        video, done = self._next()
-        video.set_info(status="downloading")
+        video.status = "downloading"
         try:
             ydl.download([video.url])
         except youtube_dl.utils.DownloadError:
-            video.set_info(status="error")
+            video.status = "error"
         except Interrupt:
-            return
-        self._finished(video)
-        done.set()  # No idea if this is okay. asyncio.Event is not threadsafe.
+            pass
 
 
 class PlaylistManager:
@@ -207,8 +193,7 @@ class Video(WidgetWrap):
                 self._title_widget.set_text(f"{self.id} - {self.title}")
                 self._ui._loop.draw_screen()
 
-    def set_info(self, status, downloaded_bytes=0, total_bytes=None,
-                 total_bytes_estimate=None, **kwargs):
+    def set_info(self, data):
         # from https://github.com/ytdl-org/youtube-dl/blob/master/youtube_dl/YoutubeDL.py
         # * status: One of "downloading", "error", or "finished".
         #           Check this first and ignore unknown values.
@@ -228,13 +213,16 @@ class Video(WidgetWrap):
         #                   downloaded video fragment.
         # * fragment_count: The number of fragments (= individual
         #                   files that will be merged)
-        if total_bytes is None and total_bytes_estimate is not None:
-            total_bytes = total_bytes_estimate
-        if status == "downloading" and total_bytes:
-            self.progress = downloaded_bytes / total_bytes
+        if data["status"] == "downloading":
+            try:
+                total_bytes = data["total_bytes"]
+            except KeyError:
+                total_bytes = data.get("total_bytes_estimate")
+            if total_bytes:
+                self.progress = data["downloaded_bytes"] / total_bytes
         else:
             self.progress = 0
-        self.status = status
+        self.status = data["status"]  # triggers redraw
 
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
