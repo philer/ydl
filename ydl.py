@@ -56,7 +56,7 @@ ydl_settings = {
     "noplaylist": True,
     "call_home": False,
     "cachedir": False,
-    # "download_archive": "youtube_dl_archive",
+    "download_archive": ".youtube_dl_archive",
     "logger": MuteLogger(),
     "outtmpl": "%(extractor)s-%(id)s_%(title)s.%(ext)s"
     # "outtmpl": "/tmp/ydl/" + youtube_dl.DEFAULT_OUTTMPL,
