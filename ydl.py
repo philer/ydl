@@ -93,14 +93,8 @@ class DownloadManager:
 
     def _work(self, video):
         """Perform actual downloads - this is run in a thread."""
-
-        # Note: I'd like to create only one YoutubeDL instance per thread
-        # using ThreadPoolExecutor's initializer argument.
-        # However while YoutubeDL.add_progress_hook exists, there is no
-        # equivalent method to remove video.set_info once we're done.
         hooks = [self._raise_interrupt, video.set_info]
         ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=hooks))
-
         video.status = "downloading"
         try:
             ydl.download([video.url])
