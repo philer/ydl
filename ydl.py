@@ -2,24 +2,35 @@
 # -*- coding: utf-8 -*-
 """YDL - An interactive CLI for youtube-dl
 
-Usage: ydl [-p | -h]
+Usage:
+    ydl [-pc] [-a | --no-archive]
+    ydl -h
 
 Options:
-    -p --play   Automatically play videos once they have finished downloading
-    -h --help   Show this help message and exit.
+    -p --play       Automatically play videos once they have
+                    finished downloading
+    -c --continue   Resume unfinishe download (existing .part/.ytdl files)
+    -a --archive-filename
+                    File to be used for storing status and URL of downloads
+    --no-archive    Start a completely empty session, do not use an archive file
+    -h --help       Show this help message and exit.
 
 test vine (spider):
 https://www.youtube.com/watch?v=RwJe8KfPCEQ
 
 TODO:
 * tests
-* delete option
+* delete option (show/hide)
+* track missing videos (deleted from outside)
 * video playback:
     + finish order vs. adding order
     + delete option after play
     + play arbitrary (separate of queue)
     + countdown timer for next playback
 """
+
+from __future__ import annotations
+from typing import Any, Iterable, Mapping, Optional, Tuple
 
 import os
 import sys
@@ -42,29 +53,59 @@ import pyperclip
 
 VIDEO_PLAYER = "/usr/bin/mpv"
 VIDEO_DELAY = 2
+ARCHIVE_FILENAME = ".ydl_archive"
 MAX_POOL_SIZE = 5
 MAX_HOST_POOL_SIZE = 3
 
 
 class MuteLogger:
-    def noop(self, msg):
+    def _noop(self, _: Any):
         pass
-    debug = warning = error = noop
+    debug = warning = error = _noop
 
 ydl_settings = {
     "format": "best",
     "noplaylist": True,
     "call_home": False,
     "cachedir": False,
-    "download_archive": ".youtube_dl_archive",
+    # "download_archive": ".youtube_dl_archive",
     "logger": MuteLogger(),
     "outtmpl": "%(extractor)s-%(id)s_%(title)s.%(ext)s"
     # "outtmpl": "/tmp/ydl/" + youtube_dl.DEFAULT_OUTTMPL,
 }
 
-class Interrupt(Exception):
-    """Used to break out of youtube-dl's blocking download via hook."""
-    pass
+
+class Archive:
+    """Simple database file for remembering past downloads."""
+
+    _video_properties = "status", "extractor", "id", "ext", "url", "title"
+
+    def __init__(self, filename: Optional[str]=None):
+        self._filename = filename or ARCHIVE_FILENAME
+
+    def __iter__(self) -> Iterator[Tuple[str, str, str, str, str]]:
+        """Iterate over the URLs with status in the archive file."""
+        try:
+            with open(self._filename, "rt") as archive:
+                for line in map(str.rstrip, archive):
+                    if line:
+                        parts = line.split(None, len(self._video_properties) - 1)
+                        yield dict(zip(self._video_properties, parts))
+        except FileNotFoundError:
+            pass
+
+    def update(self, videos: Iterable[Video]) -> None:
+        """
+        Rewrite archive file with updated status for known URLs
+        and appended new ones.
+        """
+        # TODO auto-backup
+        with open(self._filename, "wt") as archive:
+            for video in videos:
+                if video.status != "error":
+                    parts = (getattr(video, prop) for prop in self._video_properties)
+                    archive.write(" ".join(parts) + "\n")
+
 
 class DownloadManager:
     """Manages video download workers and parallel connections per host."""
@@ -86,21 +127,25 @@ class DownloadManager:
         for ex in self._executors.values():
             ex.shutdown(wait=True)
 
+    class Interrupt(Exception):
+        """Used to break out of youtube-dl's blocking download via hook."""
+        pass
+
     def _raise_interrupt(self, _):
         """Called by youtube-dl periodically - used to break out when we want to quit."""
         if self._interrupted:
-            raise Interrupt()
+            raise self.Interrupt()
 
     def _work(self, video):
         """Perform actual downloads - this is run in a thread."""
-        hooks = [self._raise_interrupt, video.set_info]
+        hooks = [self._raise_interrupt, video.set_download_info]
         ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=hooks))
         video.status = "downloading"
         try:
             ydl.download([video.url])
         except youtube_dl.utils.DownloadError:
             video.status = "error"
-        except Interrupt:
+        except self.Interrupt:
             pass
 
 
@@ -132,6 +177,7 @@ class PlaylistManager:
                                                            stderr=devnull)
                 self._process = await asyncio.shield(proc_task)
                 await self._process.wait()
+                self._process = None
             self._videos.task_done()
             await asyncio.sleep(self.delay)
 
@@ -140,7 +186,6 @@ class Video(WidgetWrap):
     """Ugly mix of data model and view widget"""
     status_icon = {
         "pending": " ⧗ ",
-        "duplicate": " = ",
         "downloading": " ⬇ ",
         "finished": " ✔ ",
         "error": " ⨯ ",
@@ -149,6 +194,10 @@ class Video(WidgetWrap):
     @property
     def hostname(self):
         return urlparse(self.url).hostname
+
+    @property
+    def filename(self):
+        return f"{self.extractor}-{self.id}_{self.title}.{self.ext}"
 
     @property
     def status(self):
@@ -165,21 +214,33 @@ class Video(WidgetWrap):
                 self._status_widget.set_text(self.status_icon[status])
             self._ui._loop.draw_screen()
 
-    def __init__(self, ui, url):
+    def __init__(self, ui, url, status="pending", **meta):
         self._ui = ui
         self.url = url
+        self._status = status
+        self._assign_meta(meta)
         self.progress = 0
-        self._status = "pending"
 
-        self._status_widget = Text(self.status_icon["pending"])
-        self._title_widget = Text(url, wrap='clip')
+        self._status_widget = Text(self.status_icon[status])
+        try:
+            info = f"{self.id} - {self.title}"
+        except AttributeError:
+            info = url
+        self._info_widget = Text(info, wrap='clip')
         columns = [
             (3, self._status_widget),
             (1, Text(("divider", "│"))),
-            self._title_widget,
+            self._info_widget,
         ]
-        self._root = AttrMap(Columns(columns, dividechars=1), "pending")
+        self._root = AttrMap(Columns(columns, dividechars=1), status)
         super().__init__(self._root)
+
+    def _assign_meta(self, data):
+        for prop in "extractor", "id", "title", "ext":
+            try:
+                setattr(self, prop, data[prop])
+            except KeyError:
+                pass
 
     def prepare_meta(self):
         """
@@ -191,16 +252,13 @@ class Video(WidgetWrap):
             meta = ydl.extract_info(self.url, download=False)
         except youtube_dl.utils.DownloadError:
             self.status = "error"
-            self.id = self.url
         else:
-            for key in "id", "title", "ext":
-                self.__dict__.setdefault(key, meta[key])
-            self.filename = "{extractor}-{id}_{title}.{ext}".format_map(meta)
+            self._assign_meta(meta)
             with self._ui.draw_lock:
-                self._title_widget.set_text(f"{self.id} - {self.title}")
+                self._info_widget.set_text(f"{self.id} - {self.title}")
                 self._ui._loop.draw_screen()
 
-    def set_info(self, data):
+    def set_download_info(self, data):
         # from https://github.com/ytdl-org/youtube-dl/blob/master/youtube_dl/YoutubeDL.py
         # * status: One of "downloading", "error", or "finished".
         #           Check this first and ignore unknown values.
@@ -233,10 +291,10 @@ class Video(WidgetWrap):
 
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
-        title_text = self._title_widget.text.strip().ljust(size[0])
+        info = self._info_widget.text.strip().ljust(size[0])
         filled_width = int(size[0] * self.progress)
-        filled, empty = title_text[:filled_width], title_text[filled_width:]
-        self._title_widget.set_text([("progress_filled", filled), empty])
+        filled, empty = info[:filled_width], info[filled_width:]
+        self._info_widget.set_text([("progress_filled", filled), empty])
         return self._root.render(size, focus)
 
 
@@ -261,7 +319,6 @@ class CustomEventLoop(AsyncioEventLoop):
 class Ui:
     palette = [
         ("pending",         "",            "", "", "g70",  ""),
-        ("duplicate",       "yellow",      "", "", "#da0", ""),
         ("downloading",     "light blue",  "", "", "#6dd", ""),
         ("finished",        "light green", "", "", "#8f6", ""),
         ("error",           "light red",   "", "", "#d66", ""),
@@ -313,26 +370,34 @@ class Ui:
 
     def _handle_urls(self, text):
         """Extract valid urls from user input and pass them on."""
-        for url in map(str.strip, text.split(sep="\n")):
-            if url:  # maybe check URL with a regex?
-                self._aio_loop.create_task(self._core.create_video(url))
+        for url in text.split():
+            if url:
+                video = self._core.create_video(url)
+                self._aio_loop.create_task(self._core.queue_video(video))
 
 class YDL:
     """Core controller"""
-    def __init__(self, play=True):
-        self.videos = dict()
+    def __init__(self, play=False, resume=False, use_archive=True, archive_filename=None):
         self._aio_loop = asyncio.get_event_loop()
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self.ui = Ui(self, self._aio_loop)
+
         self.downloads = DownloadManager()
         self.playlist = PlaylistManager() if play else None
 
+        self.archive = Archive(archive_filename) if use_archive else None
+        self.videos = dict()
+        if self.archive:
+            for data in self.archive:
+                video = self.create_video(**data)
+                if video.status in {"pending", "downloading"}:
+                    self._aio_loop.create_task(self.queue_video(video))
+
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
-        try:
-            self.ui.run_loop()
-        finally:
-            self._aio_loop.remove_signal_handler(signal.SIGINT)
+        self.ui.run_loop()
+        self._aio_loop.remove_signal_handler(signal.SIGINT)
+        self.archive.update(self.videos.values())
 
     def shutdown(self):
         if self.playlist:
@@ -340,16 +405,21 @@ class YDL:
         self.downloads.shutdown()
         self.ui.halt_loop()
 
-    async def create_video(self, url):
-        video = Video(self.ui, url)
+    def create_video(self, url, status="pending", **meta):
+        try:
+            video = self.videos[url]
+        except KeyError:
+            video = Video(self.ui, url, status, **meta)
+            self.videos[video.url] = video
         self.ui.add_video(video)
-        await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
+        return video
+
+    async def queue_video(self, video):
+        if video.status == "pending":
+            await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
         if video.status == "error":
             return
-        if video.id in self.videos:
-            video.status = "duplicate"
-        else:
-            self.videos[video.id] = video
+        if video.status != "finished":
             await self.downloads.download(video)
         if self.playlist:
             await self.playlist.add_video(video)
@@ -357,4 +427,8 @@ class YDL:
 
 if __name__ == "__main__":
     args = docopt(__doc__, version="0.0.1")
-    YDL(play=args["--play"]).run()
+    ydl = YDL(play=args["--play"],
+              resume=args["--continue"],
+              use_archive=not args["--no-archive"],
+              archive_filename=args["--archive-filename"])
+    ydl.run()
