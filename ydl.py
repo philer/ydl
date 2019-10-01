@@ -303,7 +303,10 @@ class Ui:
         if key == 'esc':
             self._core.shutdown()
         elif key == 'ctrl v':
-            self._handle_urls(pyperclip.paste())
+            try:
+                self._handle_urls(pyperclip.paste())
+            except pyperclip.PyperclipException:
+                pass
         elif key == 'enter' and self._input.edit_text:
             self._handle_urls(self._input.edit_text)
             self._input.edit_text = ""
