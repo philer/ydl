@@ -34,12 +34,14 @@ from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
 
 import os
 import sys
+import shutil
 import signal
 from collections import defaultdict
 import dataclasses
 from itertools import count
 from functools import partial
 from urllib.parse import urlparse
+from datetime import date
 
 import asyncio
 import threading
@@ -207,7 +209,13 @@ class Archive:
         Rewrite archive file with updated status for known URLs
         and appended new ones.
         """
-        # TODO auto-backup
+
+        # one backup per day keeps sorrow at bay
+        if os.path.isfile(self._filename):
+            backup = f"{self._filename}.{date.today():%Y-%m-%d}.backup"
+            if not os.path.isfile(backup):
+                shutil.copyfile(self._filename, backup)
+
         with open(self._filename, "wt") as archive:
             for video in videos:
                 if video.status not in {"error", "duplicate"}:
