@@ -326,7 +326,7 @@ class VideoWidget(WidgetWrap):
         self._ui = ui
         self._video = video
 
-        self._status_widget = Text(self.status_icon[video.status])
+        self._status_widget = Text((video.status, self.status_icon[video.status]))
         self._info_widget = Text(self._info, wrap='clip')
         self._divider = Text(("divider", "│"))
         columns = [
@@ -334,7 +334,7 @@ class VideoWidget(WidgetWrap):
             (1, self._divider),
             self._info_widget,
         ]
-        self._root = AttrMap(Columns(columns, dividechars=1), video.status, video.status + "_focus")
+        self._root = Columns(columns, dividechars=1)
         super().__init__(self._root)
 
         video.observers.append(self._handle_update)
@@ -356,10 +356,17 @@ class VideoWidget(WidgetWrap):
         else:
             icon = self.status_icon[self._video.status]
         with self._ui.draw_lock:
-            self._root.set_attr_map({None: self._video.status})
-            self._root.set_focus_map({None: self._video.status + "_focus"})
-            self._status_widget.set_text(icon)
+            # self._root.set_attr_map({None: self._video.status})
+            # self._root.set_focus_map({None: self._video.status + "_focus"})
+            # video.status, video.status + "_focus"
+            self._status_widget.set_text((selv._video.status, icon))
             self._ui._loop.draw_screen()
+
+    def selectable(self):
+        return True
+
+    def keypress(self, size, key):
+        return key
 
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
@@ -367,10 +374,11 @@ class VideoWidget(WidgetWrap):
         if self._video.status == "downloading":
             filled_width = int(size[0] * self._video.progress)
             filled, empty = info[:filled_width], info[filled_width:]
-            self._info_widget.set_text([("progress_filled", filled), empty])
+            self._info_widget.set_text([("progress_filled", filled),
+                                        ("focus" if focus else None, empty)])
         else:
-            self._info_widget.set_text(info)
-        self._divider.set_text("┃" if focus else "│")  # ╽╿
+            self._info_widget.set_text(("focus" if focus else None, info))
+        self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
         self._invalidate()
         return self._root.render(size, focus)
 
@@ -400,17 +408,12 @@ class Ui:
         ("downloading",     "light blue",  "", "", "#6dd", ""),
         ("finished",        "light green", "", "", "#8f6", ""),
         ("error",           "light red",   "", "", "#d66", ""),
+        ("focus",           "bold",        ""),
         ("progress_filled", "standout",    "", "", "g0",   "#6dd"),
-        ("divider",         "",            "", "", "#666", ""),
+        ("divider",         "dark gray",   "", "", "#666", ""),
+        ("divider_focus",   "light gray",  "", "", "#aaa", ""),
         ("prompt",          "light green", ""),
     ]
-    for display_attribute in palette[:5]:
-        palette.append((display_attribute[0] + "_focus",
-                        display_attribute[1] + ",bold",
-                        *display_attribute[2:4],
-                        display_attribute[4] + ",bold",
-                        display_attribute[5]))
-
 
     def __init__(self, core, aio_loop):
         self._core = core
@@ -438,7 +441,26 @@ class Ui:
         raise ExitMainLoop()
 
     def _handle_global_input(self, key):
-        if key == 'esc':
+        if isinstance(key, tuple) and key[0] == 'mouse press':
+            _event, button, _x, _y = key
+            if 4 <= button <= 5:
+                if self._root.focus_position == "body":
+                    try:
+                        if button == 4:
+                            self._videos.focus_position -= 1
+                        else:
+                            self._videos.focus_position += 1
+                    except IndexError:
+                        pass
+                else:
+                    self._root.focus_position = "body"
+                    if button == 4:
+                        try:
+                            self._videos.focus_position = len(self._videos.body) - 1
+                        except IndexError:
+                            pass
+
+        elif key == 'esc':
             self._core.shutdown()
         elif key == 'ctrl v':
             try:
