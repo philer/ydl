@@ -489,7 +489,10 @@ class YDL:
         self.ui.add_video(video)
         if video.status == "pending":
             await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
-        if video.status not in {"finished", "error"}:
+            if os.path.isfile(video.filename):
+                # multiple URLs pointing to the same video
+                video.status == "duplicate"
+        if video.status not in {"finished", "error", "duplicate"}:
             await self.downloads.download(video)
             if self.playlist:
                 self.playlist.add_video(video)
