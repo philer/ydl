@@ -30,12 +30,13 @@ TODO:
 """
 
 from __future__ import annotations
-from typing import Any, Iterable, Mapping, Optional, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
 
 import os
 import sys
 import signal
 from collections import defaultdict
+import dataclasses
 from itertools import count
 from functools import partial
 from urllib.parse import urlparse
@@ -52,7 +53,7 @@ import youtube_dl
 import pyperclip
 
 VIDEO_PLAYER = "/usr/bin/mpv"
-VIDEO_DELAY = 2
+VIDEO_DELAY = 0
 ARCHIVE_FILENAME = ".ydl_archive"
 MAX_POOL_SIZE = 5
 MAX_HOST_POOL_SIZE = 3
@@ -75,22 +76,129 @@ ydl_settings = {
 }
 
 
+@dataclasses.dataclass
+class Video:
+    """Primary model."""
+    url: str
+    status: str = "pending"
+
+    _meta_properties = "extractor", "id", "title", "ext"
+    extractor: str = None
+    id: str = None
+    title: str = None
+    ext: str = None
+
+    def __post_init__(self):
+        self.progress = 0
+        self.observers = []
+        self.finished = asyncio.get_event_loop().create_future()
+
+    def __setattr__(self, name, value):
+        """A simplistic observer pattern."""
+        super().__setattr__(name, value)
+        try:
+            for observer in self.observers:
+                observer(self, name, value)
+        except AttributeError:  # missing self.observers during __init__
+            pass
+
+    @property
+    def hostname(self):
+        return urlparse(self.url).hostname
+
+    @property
+    def filename(self):
+        if None in (self.extractor, self.id, self.title, self.ext):
+            raise AttributeError(f"Can't generate filename for {self}.")
+        return f"{self.extractor}-{self.id}_{self.title}.{self.ext}"
+
+    def prepare_meta(self):
+        """
+        Download meta data for this video. Some of the classes functionality
+        will not be available until this is done.
+        """
+        ydl = youtube_dl.YoutubeDL(ydl_settings)
+        try:
+            meta = ydl.extract_info(self.url, download=False)
+        except youtube_dl.utils.DownloadError:
+            self.status = "error"
+        else:
+            for prop in self._meta_properties:
+                try:
+                    setattr(self, prop, meta[prop])
+                except KeyError:
+                    pass
+
+    def sync_to_original(self, original):
+        """
+        This video has been identified as a duplicate
+        and should have its meta info mirror that of the original.
+        """
+        self.status = "duplicate"
+        for prop in self._meta_properties:
+            setattr(self, prop, getattr(original, prop))
+        original.observers.append(self._handle_update)
+
+    def _handle_update(self, original, prop, value):
+        """Update a meta property mirrored from another instance."""
+        if prop in self._meta_properties:
+            setattr(self, prop, value)
+
+    def set_download_info(self, data):
+        # from https://github.com/ytdl-org/youtube-dl/blob/master/youtube_dl/YoutubeDL.py
+        # * status: One of "downloading", "error", or "finished".
+        #           Check this first and ignore unknown values.
+        # If status is one of "downloading", or "finished", the
+        # following properties may also be present:
+        # * filename: The final filename (always present)
+        # * tmpfilename: The filename we're currently writing to
+        # * downloaded_bytes: Bytes on disk
+        # * total_bytes: Size of the whole file, None if unknown
+        # * total_bytes_estimate: Guess of the eventual file size,
+        #                         None if unavailable.
+        # * elapsed: The number of seconds since download started.
+        # * eta: The estimated time in seconds, None if unknown
+        # * speed: The download speed in bytes/second, None if
+        #          unknown
+        # * fragment_index: The counter of the currently
+        #                   downloaded video fragment.
+        # * fragment_count: The number of fragments (= individual
+        #                   files that will be merged)
+        self.status = data["status"]
+        if data["status"] == "downloading":
+            try:
+                total_bytes = data["total_bytes"]
+            except KeyError:
+                total_bytes = data.get("total_bytes_estimate")
+            if total_bytes:
+                self.progress = data["downloaded_bytes"] / total_bytes
+        elif data["status"] == "finished":
+            self.finished.set_result(True)
+
+
 class Archive:
     """Simple database file for remembering past downloads."""
 
-    _video_properties = "status", "extractor", "id", "ext", "url", "title"
+    """
+    Properties stored in archive.
+    Only status and url exist reliably, so they are first.
+    """
+    _video_properties = "status", "url", "extractor", "id", "ext", "title"
 
     def __init__(self, filename: Optional[str]=None):
         self._filename = filename or ARCHIVE_FILENAME
 
-    def __iter__(self) -> Iterator[Tuple[str, str, str, str, str]]:
+    def __iter__(self) -> Iterator[Video]:
         """Iterate over the URLs with status in the archive file."""
         try:
             with open(self._filename, "rt") as archive:
-                for line in map(str.rstrip, archive):
+                for lineno, line in enumerate(map(str.rstrip, archive)):
                     if line:
                         parts = line.split(None, len(self._video_properties) - 1)
-                        yield dict(zip(self._video_properties, parts))
+                        if len(parts) in {2, 6}:
+                            yield Video(**dict(zip(self._video_properties, parts)))
+                        else:
+                            raise ValueError(f"Invalid archive state on line {lineno}: '{line}'")
         except FileNotFoundError:
             pass
 
@@ -102,7 +210,7 @@ class Archive:
         # TODO auto-backup
         with open(self._filename, "wt") as archive:
             for video in videos:
-                if video.status != "error":
+                if video.status not in {"error", "duplicate"}:
                     parts = (getattr(video, prop) for prop in self._video_properties)
                     archive.write(" ".join(parts) + "\n")
 
@@ -152,12 +260,12 @@ class DownloadManager:
 class PlaylistManager:
     def __init__(self, delay=VIDEO_DELAY):
         self.delay = delay
-        self._videos = asyncio.Queue()
+        self._playlist = asyncio.Queue()
         self._task = None
         self._process = None
 
-    async def add_video(self, video):
-        await self._videos.put(video)
+    def add_video(self, video):
+        asyncio.create_task(self._playlist.put(video.filename))
         if self._task is None:
             self._task = asyncio.create_task(self._run())
 
@@ -166,135 +274,95 @@ class PlaylistManager:
             self._task.cancel()
         if self._process:
             self._process.terminate()
+        if self._task:
+            try:
+                exc = self._task.exception()
+            except asyncio.exceptions.InvalidStateError:
+                pass
+            else:
+                if not isinstance(exc, asyncio.CancelledError):
+                    raise exc
 
     async def _run(self):
         while True:
-            video = await self._videos.get()
+            filename = await self._playlist.get()
             with open(os.devnull, 'w') as devnull:
                 proc_task = asyncio.create_subprocess_exec(VIDEO_PLAYER,
-                                                           video.filename,
+                                                           filename,
                                                            stdout=devnull,
                                                            stderr=devnull)
                 self._process = await asyncio.shield(proc_task)
                 await self._process.wait()
                 self._process = None
-            self._videos.task_done()
+            self._playlist.task_done()
             await asyncio.sleep(self.delay)
 
 
-class Video(WidgetWrap):
+class VideoWidget(WidgetWrap):
     """Ugly mix of data model and view widget"""
     status_icon = {
         "pending": " ⧗ ",
+        "duplicate": " = ",
         "downloading": " ⬇ ",
         "finished": " ✔ ",
         "error": " ⨯ ",
     }
 
-    @property
-    def hostname(self):
-        return urlparse(self.url).hostname
-
-    @property
-    def filename(self):
-        return f"{self.extractor}-{self.id}_{self.title}.{self.ext}"
-
-    @property
-    def status(self):
-        return self._status
-
-    @status.setter
-    def status(self, status):
-        self._status = status
-        with self._ui.draw_lock:
-            self._root.set_attr_map({None: status})
-            if status == "downloading" and self.progress:
-                self._status_widget.set_text(f"{self.progress: >3.0%}")
-            else:
-                self._status_widget.set_text(self.status_icon[status])
-            self._ui._loop.draw_screen()
-
-    def __init__(self, ui, url, status="pending", **meta):
+    def __init__(self, ui, video):
         self._ui = ui
-        self.url = url
-        self._status = status
-        self._assign_meta(meta)
-        self.progress = 0
+        self._video = video
 
-        self._status_widget = Text(self.status_icon[status])
-        try:
-            info = f"{self.id} - {self.title}"
-        except AttributeError:
-            info = url
+        self._status_widget = Text(self.status_icon[video.status])
+        if video.id is not None and video.title is not None:
+            info = f"{video.id} - {video.title}"
+        else:
+            info = video.url
         self._info_widget = Text(info, wrap='clip')
         columns = [
             (3, self._status_widget),
             (1, Text(("divider", "│"))),
             self._info_widget,
         ]
-        self._root = AttrMap(Columns(columns, dividechars=1), status)
+        self._root = AttrMap(Columns(columns, dividechars=1), video.status)
         super().__init__(self._root)
 
-    def _assign_meta(self, data):
-        for prop in "extractor", "id", "title", "ext":
-            try:
-                setattr(self, prop, data[prop])
-            except KeyError:
-                pass
+        video.observers.append(self._handle_update)
 
-    def prepare_meta(self):
-        """
-        Download meta data for this video. Some of the classes functionality
-        will not be available until this is done.
-        """
-        ydl = youtube_dl.YoutubeDL(ydl_settings)
-        try:
-            meta = ydl.extract_info(self.url, download=False)
-        except youtube_dl.utils.DownloadError:
-            self.status = "error"
-        else:
-            self._assign_meta(meta)
-            with self._ui.draw_lock:
-                self._info_widget.set_text(f"{self.id} - {self.title}")
-                self._ui._loop.draw_screen()
+    def _handle_update(self, _video, prop, _value):
+        if prop in {"id", "title"}:
+            self.update_info()
+        elif prop in {"status", "progress"}:
+            self.update_status()
 
-    def set_download_info(self, data):
-        # from https://github.com/ytdl-org/youtube-dl/blob/master/youtube_dl/YoutubeDL.py
-        # * status: One of "downloading", "error", or "finished".
-        #           Check this first and ignore unknown values.
-        # If status is one of "downloading", or "finished", the
-        # following properties may also be present:
-        # * filename: The final filename (always present)
-        # * tmpfilename: The filename we're currently writing to
-        # * downloaded_bytes: Bytes on disk
-        # * total_bytes: Size of the whole file, None if unknown
-        # * total_bytes_estimate: Guess of the eventual file size,
-        #                         None if unavailable.
-        # * elapsed: The number of seconds since download started.
-        # * eta: The estimated time in seconds, None if unknown
-        # * speed: The download speed in bytes/second, None if
-        #          unknown
-        # * fragment_index: The counter of the currently
-        #                   downloaded video fragment.
-        # * fragment_count: The number of fragments (= individual
-        #                   files that will be merged)
-        if data["status"] == "downloading":
-            try:
-                total_bytes = data["total_bytes"]
-            except KeyError:
-                total_bytes = data.get("total_bytes_estimate")
-            if total_bytes:
-                self.progress = data["downloaded_bytes"] / total_bytes
+    def update_info(self):
+        if self._video.id is not None and self._video.title is not None:
+            info = f"{self._video.id} - {self._video.title}"
         else:
-            self.progress = 0
-        self.status = data["status"]  # triggers redraw
+            info = self._video.url
+        with self._ui.draw_lock:
+            self._info_widget.set_text(info)
+            self._ui._loop.draw_screen()
+
+    def update_status(self):
+        if self._video.status == "downloading" and self._video.progress:
+            icon = f"{self._video.progress: >3.0%}"
+        else:
+            icon = self.status_icon[self._video.status]
+        with self._ui.draw_lock:
+            self._root.set_attr_map({None: self._video.status})
+            self._status_widget.set_text(icon)
+            self._ui._loop.draw_screen()
 
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
         info = self._info_widget.text.strip().ljust(size[0])
-        filled_width = int(size[0] * self.progress)
-        filled, empty = info[:filled_width], info[filled_width:]
-        self._info_widget.set_text([("progress_filled", filled), empty])
+        if self._video.status == "downloading":
+            filled_width = int(size[0] * self._video.progress)
+            filled, empty = info[:filled_width], info[filled_width:]
+            self._info_widget.set_text([("progress_filled", filled), empty])
+        else:
+            self._info_widget.set_text(info)
+        self._invalidate()
         return self._root.render(size, focus)
 
 
@@ -319,6 +387,7 @@ class CustomEventLoop(AsyncioEventLoop):
 class Ui:
     palette = [
         ("pending",         "",            "", "", "g70",  ""),
+        ("duplicate",       "yellow",      "", "", "#da0", ""),
         ("downloading",     "light blue",  "", "", "#6dd", ""),
         ("finished",        "light green", "", "", "#8f6", ""),
         ("error",           "light red",   "", "", "#d66", ""),
@@ -352,10 +421,6 @@ class Ui:
     def halt_loop(self, *_):
         raise ExitMainLoop()
 
-    def add_video(self, video):
-        with self.draw_lock:
-            self._videos.body.append(video)
-
     def _handle_global_input(self, key):
         if key == 'esc':
             self._core.shutdown()
@@ -372,8 +437,14 @@ class Ui:
         """Extract valid urls from user input and pass them on."""
         for url in text.split():
             if url:
-                video = self._core.create_video(url)
-                self._aio_loop.create_task(self._core.queue_video(video))
+                self._aio_loop.create_task(self._core.add_video(Video(url)))
+
+    def add_video(self, video):
+        """Wrap a new video and add it to the display."""
+        widget = VideoWidget(self, video)
+        with self.draw_lock:
+            self._videos.body.append(widget)
+
 
 class YDL:
     """Core controller"""
@@ -385,13 +456,11 @@ class YDL:
         self.downloads = DownloadManager()
         self.playlist = PlaylistManager() if play else None
 
-        self.archive = Archive(archive_filename) if use_archive else None
         self.videos = dict()
+        self.archive = Archive(archive_filename) if use_archive else None
         if self.archive:
-            for data in self.archive:
-                video = self.create_video(**data)
-                if video.status in {"pending", "downloading"}:
-                    self._aio_loop.create_task(self.queue_video(video))
+            for video in self.archive:
+                self._aio_loop.create_task(self.add_video(video))
 
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
@@ -405,24 +474,25 @@ class YDL:
         self.downloads.shutdown()
         self.ui.halt_loop()
 
-    def create_video(self, url, status="pending", **meta):
-        try:
-            video = self.videos[url]
-        except KeyError:
-            video = Video(self.ui, url, status, **meta)
-            self.videos[video.url] = video
-        self.ui.add_video(video)
-        return video
+    async def add_video(self, video):
+        """Manage a video's progression through life."""
+        if video.url in self.videos:
+            original = self.videos[video.url]
+            video.sync_to_original(original)
+            self.ui.add_video(video)
+            if self.playlist:
+                await original.finished
+                self.playlist.add_video(video)
+            return
 
-    async def queue_video(self, video):
+        self.videos[video.url] = video
+        self.ui.add_video(video)
         if video.status == "pending":
             await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
-        if video.status == "error":
-            return
-        if video.status != "finished":
+        if video.status not in {"finished", "error"}:
             await self.downloads.download(video)
-        if self.playlist:
-            await self.playlist.add_video(video)
+            if self.playlist:
+                self.playlist.add_video(video)
 
 
 if __name__ == "__main__":
