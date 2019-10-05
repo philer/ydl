@@ -316,22 +316,25 @@ class VideoWidget(WidgetWrap):
         "error": " ⨯ ",
     }
 
+    @property
+    def _info(self):
+        if self._video.id is not None and self._video.title is not None:
+            return f"{self._video.id} - {self._video.title}"
+        return self._video.url
+
     def __init__(self, ui, video):
         self._ui = ui
         self._video = video
 
         self._status_widget = Text(self.status_icon[video.status])
-        if video.id is not None and video.title is not None:
-            info = f"{video.id} - {video.title}"
-        else:
-            info = video.url
-        self._info_widget = Text(info, wrap='clip')
+        self._info_widget = Text(self._info, wrap='clip')
+        self._divider = Text(("divider", "│"))
         columns = [
             (3, self._status_widget),
-            (1, Text(("divider", "│"))),
+            (1, self._divider),
             self._info_widget,
         ]
-        self._root = AttrMap(Columns(columns, dividechars=1), video.status)
+        self._root = AttrMap(Columns(columns, dividechars=1), video.status, video.status + "_focus")
         super().__init__(self._root)
 
         video.observers.append(self._handle_update)
@@ -343,12 +346,8 @@ class VideoWidget(WidgetWrap):
             self.update_status()
 
     def update_info(self):
-        if self._video.id is not None and self._video.title is not None:
-            info = f"{self._video.id} - {self._video.title}"
-        else:
-            info = self._video.url
         with self._ui.draw_lock:
-            self._info_widget.set_text(info)
+            self._info_widget.set_text(self._info)
             self._ui._loop.draw_screen()
 
     def update_status(self):
@@ -358,18 +357,20 @@ class VideoWidget(WidgetWrap):
             icon = self.status_icon[self._video.status]
         with self._ui.draw_lock:
             self._root.set_attr_map({None: self._video.status})
+            self._root.set_focus_map({None: self._video.status + "_focus"})
             self._status_widget.set_text(icon)
             self._ui._loop.draw_screen()
 
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
-        info = self._info_widget.text.strip().ljust(size[0])
+        info = self._info.ljust(size[0])
         if self._video.status == "downloading":
             filled_width = int(size[0] * self._video.progress)
             filled, empty = info[:filled_width], info[filled_width:]
             self._info_widget.set_text([("progress_filled", filled), empty])
         else:
             self._info_widget.set_text(info)
+        self._divider.set_text("┃" if focus else "│")  # ╽╿
         self._invalidate()
         return self._root.render(size, focus)
 
@@ -403,6 +404,13 @@ class Ui:
         ("divider",         "",            "", "", "#666", ""),
         ("prompt",          "light green", ""),
     ]
+    for display_attribute in palette[:5]:
+        palette.append((display_attribute[0] + "_focus",
+                        display_attribute[1] + ",bold",
+                        *display_attribute[2:4],
+                        display_attribute[4] + ",bold",
+                        display_attribute[5]))
+
 
     def __init__(self, core, aio_loop):
         self._core = core
