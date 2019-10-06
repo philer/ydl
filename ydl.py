@@ -177,6 +177,20 @@ class Video:
         elif data["status"] == "finished":
             self.finished.set_result(True)
 
+    async def play(self):
+        try:
+            with open(os.devnull, 'w') as devnull:
+                process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
+                                                               self.filename,
+                                                               stdout=devnull,
+                                                               stderr=devnull)
+                await process.wait()
+        except asyncio.CancelledError:
+            process.terminate()
+            raise
+        except Exception as e:
+            log.exception(e)
+
 
 class Archive:
     """Simple database file for remembering past downloads."""
@@ -270,39 +284,14 @@ class PlaylistManager:
     def __init__(self, delay=VIDEO_DELAY):
         self.delay = delay
         self._playlist = asyncio.Queue()
-        self._task = None
-        self._process = None
+        asyncio.create_task(self._run())
 
     def add_video(self, video):
-        asyncio.create_task(self._playlist.put(video.filename))
-        if self._task is None:
-            self._task = asyncio.create_task(self._run())
-
-    def shutdown(self):
-        if self._task:
-            self._task.cancel()
-        if self._process:
-            self._process.terminate()
-        if self._task:
-            try:
-                exc = self._task.exception()
-            except asyncio.exceptions.InvalidStateError:
-                pass
-            else:
-                if not isinstance(exc, asyncio.CancelledError):
-                    raise exc
+        asyncio.create_task(self._playlist.put(video))
 
     async def _run(self):
         while True:
-            filename = await self._playlist.get()
-            with open(os.devnull, 'w') as devnull:
-                proc_task = asyncio.create_subprocess_exec(VIDEO_PLAYER,
-                                                           filename,
-                                                           stdout=devnull,
-                                                           stderr=devnull)
-                self._process = await asyncio.shield(proc_task)
-                await self._process.wait()
-                self._process = None
+            await (await self._playlist.get()).play()
             self._playlist.task_done()
             await asyncio.sleep(self.delay)
 
@@ -366,8 +355,11 @@ class VideoWidget(WidgetWrap):
     def selectable(self):
         return True
 
-    def keypress(self, size, key):
-        return key
+    def keypress(self, _size, key):
+        if key == "p" or key == "enter":
+            asyncio.get_running_loop().create_task(self._video.play())
+        else:
+            return key
 
     def render(self, size, focus=False):
         """hack allows me to change text background based on size"""
@@ -504,14 +496,21 @@ class YDL:
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
         self.ui.run_loop()
-        self._aio_loop.remove_signal_handler(signal.SIGINT)
+        self.downloads.shutdown()
+        self._aio_loop.run_until_complete(self._cleanup_tasks())
+        self._aio_loop.close()
         self.archive.update(self.videos.values())
 
     def shutdown(self):
-        if self.playlist:
-            self.playlist.shutdown()
-        self.downloads.shutdown()
         self.ui.halt_loop()
+
+    async def _cleanup_tasks(self):
+        tasks = asyncio.all_tasks(self._aio_loop)
+        current_task = asyncio.current_task(self._aio_loop)
+        tasks = {task for task in tasks if task is not current_task}
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def add_video(self, video):
         """Manage a video's progression through life."""
@@ -555,5 +554,7 @@ if __name__ == "__main__":
     log_stream = setup_logging(args["--verbose"])
     archive = None if args["--no-archive"] else Archive(args["--archive-filename"])
     ydl = YDL(archive, play=args["--play"], resume=args["--continue"])
-    ydl.run()
-    print(log_stream.getvalue(), end="")
+    try:
+        ydl.run()
+    finally:
+        print(log_stream.getvalue(), end="")
