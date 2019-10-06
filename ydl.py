@@ -3,7 +3,7 @@
 """YDL - An interactive CLI for youtube-dl
 
 Usage:
-    ydl [-pc] [-a | --no-archive]
+    ydl [-pc] [-a | --no-archive] [-v|-vv]
     ydl -h
 
 Options:
@@ -13,6 +13,7 @@ Options:
     -a --archive-filename
                     File to be used for storing status and URL of downloads
     --no-archive    Start a completely empty session, do not use an archive file
+    -v --verbose   Show more and more info.
     -h --help       Show this help message and exit.
 
 test vine (spider):
@@ -36,6 +37,8 @@ import os
 import sys
 import shutil
 import signal
+import logging
+import io
 from collections import defaultdict
 import dataclasses
 from itertools import count
@@ -61,10 +64,7 @@ MAX_POOL_SIZE = 5
 MAX_HOST_POOL_SIZE = 3
 
 
-class MuteLogger:
-    def _noop(self, _: Any):
-        pass
-    debug = warning = error = _noop
+log = logging.getLogger(__name__)
 
 ydl_settings = {
     "format": "best",
@@ -72,7 +72,7 @@ ydl_settings = {
     "call_home": False,
     "cachedir": False,
     # "download_archive": ".youtube_dl_archive",
-    "logger": MuteLogger(),
+    "logger": logging.getLogger("youtube_dl"),
     "outtmpl": "%(extractor)s-%(id)s_%(title)s.%(ext)s"
     # "outtmpl": "/tmp/ydl/" + youtube_dl.DEFAULT_OUTTMPL,
 }
@@ -214,6 +214,7 @@ class Archive:
         if os.path.isfile(self._filename):
             backup = f"{self._filename}.{date.today():%Y-%m-%d}.backup"
             if not os.path.isfile(backup):
+                log.info(f"Creating backup of .ydl_archive at {backup}")
                 shutil.copyfile(self._filename, backup)
 
         with open(self._filename, "wt") as archive:
@@ -486,7 +487,8 @@ class Ui:
 
 class YDL:
     """Core controller"""
-    def __init__(self, play=False, resume=False, use_archive=True, archive_filename=None):
+    def __init__(self, archive=None, play=False, resume=False):
+        self.archive = archive
         self._aio_loop = asyncio.get_event_loop()
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self.ui = Ui(self, self._aio_loop)
@@ -495,9 +497,8 @@ class YDL:
         self.playlist = PlaylistManager() if play else None
 
         self.videos = dict()
-        self.archive = Archive(archive_filename) if use_archive else None
-        if self.archive:
-            for video in self.archive:
+        if archive:
+            for video in archive:
                 self._aio_loop.create_task(self.add_video(video))
 
     def run(self):
@@ -536,10 +537,23 @@ class YDL:
                 self.playlist.add_video(video)
 
 
+def setup_logging(verbosity: int):
+    root_logger = logging.getLogger(__package__)
+    root_logger.setLevel((logging.ERROR, logging.INFO, logging.DEBUG)[verbosity])
+    log_stream = io.StringIO()
+    if verbosity > 1:
+        fmt = "%(levelname)s (%(name)s) %(message)s"
+    else:
+        fmt = "%(message)s"
+    handler = logging.StreamHandler(log_stream)
+    handler.setFormatter(logging.Formatter(fmt))
+    root_logger.addHandler(handler)
+    return log_stream
+
 if __name__ == "__main__":
     args = docopt(__doc__, version="0.0.1")
-    ydl = YDL(play=args["--play"],
-              resume=args["--continue"],
-              use_archive=not args["--no-archive"],
-              archive_filename=args["--archive-filename"])
+    log_stream = setup_logging(args["--verbose"])
+    archive = None if args["--no-archive"] else Archive(args["--archive-filename"])
+    ydl = YDL(archive, play=args["--play"], resume=args["--continue"])
     ydl.run()
+    print(log_stream.getvalue(), end="")
