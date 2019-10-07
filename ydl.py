@@ -318,6 +318,20 @@ class PlaylistManager:
 
 class VideoWidget(WidgetWrap):
     """Ugly mix of data model and view widget"""
+
+    palette = [
+        ("pending",            "light gray",  "", "", "g70",  ""),
+        ("duplicate",          "yellow",      "", "", "#da0", ""),
+        ("downloading",        "light blue",  "", "", "#6dd", ""),
+        ("downloading_filled", "standout",    "", "", "g0",   "#6dd"),
+        ("finished",           "",            "", "", "",     ""),
+        ("finished_icon",      "light green", "", "", "#8f6", ""),
+        ("error",              "light red",   "", "", "#d66", ""),
+        ("deleted",            "light gray",  "", "", "#888", ""),
+    ]
+    palette += [(p[0] + "_focus", p[1] + ",bold", *p[2:4], p[4] + ",bold", p[5])
+                for p in palette]
+
     status_icon = {
         "pending": " ⧗ ",
         "duplicate": " = ",
@@ -338,8 +352,9 @@ class VideoWidget(WidgetWrap):
         self._ui = ui
         self._video = video
 
-        self._status_widget = Text((video.status, self.status_icon[video.status]))
-        self._info_widget = Text(self._info, wrap='clip')
+        self._status_widget = Text(" ? ")
+        self.update_status_icon()
+        self._info_widget = Text("", wrap='clip')
         self._divider = Text(("divider", "│"))
         columns = [
             (3, self._status_widget),
@@ -352,27 +367,20 @@ class VideoWidget(WidgetWrap):
         video.observers.append(self._handle_update)
 
     def _handle_update(self, _video, prop, _value):
-        if prop in {"id", "title"}:
-            self.update_info()
-        elif prop in {"status", "progress"}:
-            self.update_status()
-
-    def update_info(self):
+        if prop in {"status", "progress"}:
+            self.update_status_icon()
         with self._ui.draw_lock:
-            self._info_widget.set_text(self._info)
             self._ui._loop.draw_screen()
 
-    def update_status(self):
-        if self._video.status == "downloading" and self._video.progress:
+    def update_status_icon(self):
+        status = self._video.status
+        style = "finished_icon" if status == "finished" else status
+        if status == "downloading" and self._video.progress:
             icon = f"{self._video.progress: >3.0%}"
         else:
-            icon = self.status_icon[self._video.status]
+            icon = self.status_icon[status]
         with self._ui.draw_lock:
-            # self._root.set_attr_map({None: self._video.status})
-            # self._root.set_focus_map({None: self._video.status + "_focus"})
-            # video.status, video.status + "_focus"
-            self._status_widget.set_text((self._video.status, icon))
-            self._ui._loop.draw_screen()
+            self._status_widget.set_text((style, icon))
 
     async def _delete(self):
         if await self._ui.confirm("Really delete?"):
@@ -390,15 +398,17 @@ class VideoWidget(WidgetWrap):
             return key
 
     def render(self, size, focus=False):
-        """hack allows me to change text background based on size"""
+        """Update appearance based on video status, widget focus and size."""
+        status = self._video.status
+        focused = "_focus" if focus else ""
         info = self._info.ljust(size[0])
-        if self._video.status == "downloading":
+        if status == "downloading":
             filled_width = int(size[0] * self._video.progress)
             filled, empty = info[:filled_width], info[filled_width:]
-            self._info_widget.set_text([("progress_filled", filled),
-                                        ("focus" if focus else None, empty)])
+            self._info_widget.set_text([("downloading_filled" + focused, filled),
+                                        ("downloading" + focused, empty)])
         else:
-            self._info_widget.set_text(("focus" if focus else None, info))
+            self._info_widget.set_text((status + focused, info))
         self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
         self._invalidate()
         return self._root.render(size, focus)
@@ -515,21 +525,14 @@ class CustomEventLoop(AsyncioEventLoop):
             loop.default_exception_handler(context)
 
 class Ui:
-    palette = [
-        ("pending",         "",            "", "", "g70",  ""),
-        ("duplicate",       "yellow",      "", "", "#da0", ""),
-        ("downloading",     "light blue",  "", "", "#6dd", ""),
-        ("finished",        "light green", "", "", "#8f6", ""),
-        ("error",           "light red",   "", "", "#d66", ""),
-        ("deleted",         "light gray",  "", "", "#888", ""),
-        ("focus",           "bold",        ""),
-        ("progress_filled", "standout",    "", "", "g0",   "#6dd"),
+    palette = (
+        *VideoWidget.palette,
         ("divider",         "dark gray",   "", "", "#666", ""),
         ("divider_focus",   "light gray",  "", "", "#aaa", ""),
         ("prompt",          "light green", ""),
         ("button",          "bold",        ""),
         ("button_focus",    "bold,standout",""),
-    ]
+    )
 
     def __init__(self, core, aio_loop):
         self._core = core
