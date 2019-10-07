@@ -324,10 +324,11 @@ class VideoWidget(WidgetWrap):
         ("finished",           "",            "", "", "",     ""),
         ("finished_icon",      "light green", "", "", "#8f6", ""),
         ("error",              "light red",   "", "", "#d66", ""),
-        ("deleted",            "light gray",  "", "", "#888", ""),
+        ("deleted",            "dark gray,strikethrough", "", "", "#666,strikethrough", ""),
+        ("deleted_icon",       "dark gray",   "", "", "#666", ""),
     ]
     palette += [(p[0] + "_focus", p[1] + ",bold", *p[2:4], p[4] + ",bold", p[5])
-                for p in palette]
+                for p in palette if not p[0].endswith("_icon")]
 
     status_icon = {
         "pending": " ⧗ ",
@@ -371,7 +372,7 @@ class VideoWidget(WidgetWrap):
 
     def update_status_icon(self):
         status = self._video.status
-        style = "finished_icon" if status == "finished" else status
+        style = status + "_icon" if status in {"finished", "deleted"} else status
         if status == "downloading" and self._video.progress:
             icon = f"{self._video.progress: >3.0%}"
         else:
