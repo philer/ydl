@@ -293,7 +293,7 @@ class Ui:
         """Extract valid urls from user input and pass them on."""
         for url in text.split():
             if url:
-                self._aio_loop.create_task(self._core.add_video(Video(url)))
+                self._aio_loop.create_task(self._core.add_video(url))
 
     def add_video(self, video):
         """Wrap a new video and add it to the display."""

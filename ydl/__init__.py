@@ -19,6 +19,7 @@ import youtube_dl
 
 from .ui import Ui
 
+
 __title__ = "ydl"
 __version__ = "0.1.0"
 __license__ = "MIT"
@@ -301,7 +302,10 @@ class YDL:
         self.videos = dict()
         if archive:
             for video in archive:
-                self._aio_loop.create_task(self.add_video(video))
+                self.videos[video.url] = video
+                self.ui.add_video(video)
+                if video.status in {"pending", "downloading"}:
+                    self._aio_loop.create_task(self._handle_new_video(video))
 
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
@@ -322,25 +326,27 @@ class YDL:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def add_video(self, video):
+    async def add_video(self, url: str):
         """Manage a video's progression through life."""
-        if video.url in self.videos:
-            original = self.videos[video.url]
+        video = Video(url)
+        self.ui.add_video(video)
+        if url in self.videos:
+            original = self.videos[url]
             video.sync_to_original(original)
-            self.ui.add_video(video)
             if self.playlist:
                 await original.finished
                 self.playlist.add_video(video)
-            return
+        else:
+            self.videos[url] = video
+            await self._handle_new_video(video)
 
-        self.videos[video.url] = video
-        self.ui.add_video(video)
+    async def _handle_new_video(self, video):
         if video.status == "pending":
             await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
             if video.status != "error" and os.path.isfile(video.filename):
                 # multiple URLs pointing to the same video
                 video.status == "duplicate"
-        if video.status not in {"finished", "error", "deleted", "duplicate"}:
+        if video.status in {"pending", "downloading"}:
             await self.downloads.download(video)
             if self.playlist:
                 self.playlist.add_video(video)
