@@ -51,9 +51,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from docopt import docopt
-from urwid import (AttrMap, Columns, Divider, Edit, ExitMainLoop, Frame,
-                   ListBox, MainLoop, Pile, Text, WidgetWrap,
-                   AsyncioEventLoop)
+import urwid
+from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, Edit,
+                   ExitMainLoop, Filler, Frame, LineBox, ListBox, MainLoop,
+                   Overlay, Padding, Pile, Text, WidgetPlaceholder, WidgetWrap)
 import youtube_dl
 import pyperclip
 
@@ -136,6 +137,7 @@ class Video:
         This video has been identified as a duplicate
         and should have its meta info mirror that of the original.
         """
+        self._original = original
         self.status = "duplicate"
         for prop in self._meta_properties:
             setattr(self, prop, getattr(original, prop))
@@ -190,6 +192,24 @@ class Video:
             raise
         except Exception as e:
             log.exception(e)
+
+    def delete(self):
+        """
+        Remove this video file from the file system and mark it as deleted.
+        TODO: Also interrupt any pending or ongoing download and cleanup temporary files.
+        """
+        if self.status in {"deleted", "error"}:
+            return
+        elif self.status == "duplicate":
+            self._original.delete()
+        elif self.status == "pending":
+            ...  # TODO interrupt
+        elif self.status == "downloading":
+            ...  # TODO interrupt
+        else:
+            log.info(f"Removing file '{self.filename}'.")
+            os.remove(self.filename)  # TODO some error handling on this
+            self.status = "deleted"
 
 
 class Archive:
@@ -284,7 +304,7 @@ class PlaylistManager:
     def __init__(self, delay=VIDEO_DELAY):
         self.delay = delay
         self._playlist = asyncio.Queue()
-        asyncio.create_task(self._run())
+        asyncio.ensure_future(self._run())
 
     def add_video(self, video):
         asyncio.create_task(self._playlist.put(video))
@@ -304,6 +324,8 @@ class VideoWidget(WidgetWrap):
         "downloading": " ⬇ ",
         "finished": " ✔ ",
         "error": " ⨯ ",
+        "deleted": " ⨯ ",
+        # ▶ ♻
     }
 
     @property
@@ -349,15 +371,21 @@ class VideoWidget(WidgetWrap):
             # self._root.set_attr_map({None: self._video.status})
             # self._root.set_focus_map({None: self._video.status + "_focus"})
             # video.status, video.status + "_focus"
-            self._status_widget.set_text((selv._video.status, icon))
+            self._status_widget.set_text((self._video.status, icon))
             self._ui._loop.draw_screen()
+
+    async def _delete(self):
+        if await self._ui.confirm("Really delete?"):
+            self._video.delete()
 
     def selectable(self):
         return True
 
     def keypress(self, _size, key):
         if key == "p" or key == "enter":
-            asyncio.get_running_loop().create_task(self._video.play())
+            self._ui._aio_loop.create_task(self._video.play())
+        elif key == "d" or key == "delete":
+            self._ui._aio_loop.create_task(self._delete())
         else:
             return key
 
@@ -375,6 +403,98 @@ class VideoWidget(WidgetWrap):
         self._invalidate()
         return self._root.render(size, focus)
 
+
+class Button(WidgetWrap):
+    signals = ["click"]
+
+    def __init__(self, caption, callback=None):
+        root = AttrMap(Text(f"[{caption}]"), "button", "button_focus")
+        super().__init__(root)
+        if callback:
+            urwid.connect_signal(self, "click", callback)
+
+    def selectable(self):
+        return True
+
+    def keypress(self, _size, key):
+        """Send "click" signal on 'activate' command."""
+        if self._command_map[key] == urwid.ACTIVATE:
+            self._emit("click")
+        else:
+            return key
+
+    def mouse_event(self, _size, event, button, *_):
+        """Send "click" signal on button 1 press."""
+        if button == 1 and urwid.util.is_mouse_press(event):
+            self._emit("click")
+            return True
+        return False
+
+class Dialog(WidgetWrap):
+    """
+    Dialog Wídget that can be attached to an existing WidgetPlaceholder.
+    As a (experimental) subclass of asyncio.Future the result can be awaited.
+    """
+    def __init__(self, content, *, parent=None, buttons=("cancel", "continue")):
+        self._parent = parent
+        self._future = asyncio.get_event_loop().create_future()
+        if isinstance(content, str):
+            content = Text(content, align="center")
+        elif not isinstance(content, urwid.Widget):
+            raise TypeError("Content of Dialog widget must be instance of Widget or str.")
+        if buttons:
+            row = [Divider()]
+            for button in buttons:
+                if isinstance(button, str):
+                    button, name = Button(button.capitalize()), button
+                    urwid.connect_signal(button, "click", self.close, user_args=[name])
+                row.append(('pack', button))
+            row.append(Divider())
+            row = Columns(row, dividechars=3)
+            row.focus_position = len(buttons)
+            row = Padding(row, align="center", width="pack")
+            content = Pile([content, Divider(top=1), row])
+        self._root = LineBox(Filler(content))
+        super().__init__(self._root)
+        if parent:
+            self.show(parent)
+
+    def __getattr__(self, attr):
+        try:
+            return getattr(self._future, attr)
+        except AttributeError:
+            raise AttributeError from None
+
+    def __await__(self):
+        return self._future.__await__()
+
+    def show(self, parent):
+        assert isinstance(parent, WidgetPlaceholder)
+        self._parent = parent
+        widget = Overlay(self,
+                         parent.original_widget,
+                         align='center', valign='middle',
+                         height=('relative', 50), min_height=5,
+                         width=('relative', 50), min_width=10)
+        parent.original_widget = widget
+        parent._invalidate()
+
+    def close(self, result=None, *_):
+        if self._parent:
+            self._parent.original_widget = self._parent.original_widget.contents[0][0]
+        if result == "cancel":
+            self._future.cancel()
+        else:
+            self._future.set_result(result)
+
+    def keypress(self, size, key):
+        """Swallow anything the Dialog content doesn't use."""
+        if self._root.keypress(size, key) is None:
+            return
+        if key == "esc":
+            self.close("cancel")
+        else:
+            return key
 
 class CustomEventLoop(AsyncioEventLoop):
     """
@@ -401,11 +521,14 @@ class Ui:
         ("downloading",     "light blue",  "", "", "#6dd", ""),
         ("finished",        "light green", "", "", "#8f6", ""),
         ("error",           "light red",   "", "", "#d66", ""),
+        ("deleted",         "light gray",  "", "", "#888", ""),
         ("focus",           "bold",        ""),
         ("progress_filled", "standout",    "", "", "g0",   "#6dd"),
         ("divider",         "dark gray",   "", "", "#666", ""),
         ("divider_focus",   "light gray",  "", "", "#aaa", ""),
         ("prompt",          "light green", ""),
+        ("button",          "bold",        ""),
+        ("button_focus",    "bold,standout",""),
     ]
 
     def __init__(self, core, aio_loop):
@@ -415,8 +538,8 @@ class Ui:
         self._input = Edit(caption=("prompt", "⟩ "))
         self._videos = ListBox([])
         footer = Pile([AttrMap(Divider("─"), "divider"), self._input])
-        self._root = Frame(body=self._videos, footer=footer)
-        self._root.focus_position = "footer"
+        self._main = Frame(body=self._videos, footer=footer)
+        self._root = WidgetPlaceholder(self._main)
 
         self._loop = MainLoop(widget=self._root,
                               palette=self.palette,
@@ -434,10 +557,10 @@ class Ui:
         raise ExitMainLoop()
 
     def _handle_global_input(self, key):
-        if isinstance(key, tuple) and key[0] == 'mouse press':
+        if isinstance(key, tuple) and key[0] == "mouse press":
             _event, button, _x, _y = key
             if 4 <= button <= 5:
-                if self._root.focus_position == "body":
+                if self._main.focus_position == "body":
                     try:
                         if button == 4:
                             self._videos.focus_position -= 1
@@ -446,21 +569,21 @@ class Ui:
                     except IndexError:
                         pass
                 else:
-                    self._root.focus_position = "body"
+                    self._main.focus_position = "body"
                     if button == 4:
                         try:
                             self._videos.focus_position = len(self._videos.body) - 1
                         except IndexError:
                             pass
 
-        elif key == 'esc':
+        elif key == "q" or key == "esc":
             self._core.shutdown()
-        elif key == 'ctrl v':
+        elif key == "ctrl v":
             try:
                 self._handle_urls(pyperclip.paste())
             except pyperclip.PyperclipException:
                 pass
-        elif key == 'enter' and self._input.edit_text:
+        elif key == "enter" and self._input.edit_text:
             self._handle_urls(self._input.edit_text)
             self._input.edit_text = ""
 
@@ -475,6 +598,9 @@ class Ui:
         widget = VideoWidget(self, video)
         with self.draw_lock:
             self._videos.body.append(widget)
+
+    async def confirm(self, message):
+        return "continue" == await Dialog(message, parent=self._root)
 
 
 class YDL:
@@ -530,7 +656,7 @@ class YDL:
             if os.path.isfile(video.filename):
                 # multiple URLs pointing to the same video
                 video.status == "duplicate"
-        if video.status not in {"finished", "error", "duplicate"}:
+        if video.status not in {"finished", "error", "deleted", "duplicate"}:
             await self.downloads.download(video)
             if self.playlist:
                 self.playlist.add_video(video)
