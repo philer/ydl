@@ -22,7 +22,7 @@ import logging
 
 from docopt import docopt
 
-from . import YDL, Archive
+from . import __version__, Archive, YDL
 
 
 def setup_logging(verbosity: int):
@@ -39,7 +39,7 @@ def setup_logging(verbosity: int):
     return log_stream
 
 def main():
-    args = docopt(__doc__, version="0.0.1")
+    args = docopt(__doc__, version=__version__)
     log_stream = setup_logging(args["--verbose"])
     archive = None if args["--no-archive"] else Archive(args["--archive-filename"])
     ydl = YDL(archive, play=args["--play"], resume=args["--continue"])
