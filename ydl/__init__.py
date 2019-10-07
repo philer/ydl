@@ -225,7 +225,9 @@ class Archive:
 
         with open(self._filename, "wt") as archive:
             for video in videos:
-                if video.status not in {"error", "duplicate"}:
+                if video.status == "pending":
+                    archive.write(f"{video.status} {video.url}\n")
+                elif video.status not in {"error", "duplicate"}:
                     parts = (getattr(video, prop) for prop in self._video_properties)
                     archive.write(" ".join(parts) + "\n")
 
