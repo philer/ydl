@@ -601,6 +601,7 @@ class Ui:
         widget = VideoWidget(self, video)
         with self.draw_lock:
             self._videos.body.append(widget)
+            self._videos.focus_position = len(self._videos.body) - 1
 
     async def confirm(self, message):
         return "continue" == await Dialog(message, parent=self._root)
