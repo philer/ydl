@@ -31,24 +31,21 @@ TODO:
 """
 
 from __future__ import annotations
-from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
-
+import asyncio
+import dataclasses
+import io
+import logging
 import os
-import sys
 import shutil
 import signal
-import logging
-import io
-from collections import defaultdict
-import dataclasses
-from itertools import count
-from functools import partial
-from urllib.parse import urlparse
-from datetime import date
-
-import asyncio
+import sys
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+from functools import partial
+from typing import Iterable, Iterator, Optional
+from urllib.parse import urlparse
 
 from docopt import docopt
 import urwid
@@ -517,7 +514,6 @@ class CustomEventLoop(AsyncioEventLoop):
             loop.stop()
             if not isinstance(exc, ExitMainLoop):
                 # Store the exc_info so we can re-raise after the loop stops
-                import sys
                 self._exc_info = sys.exc_info()
                 if self._exc_info == (None, None, None):
                     self._exc_info = (type(exc), exc, exc.__traceback__)
