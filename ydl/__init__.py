@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import logging
 import os
+import random
 import shutil
 import signal
 from collections import defaultdict
@@ -152,6 +153,7 @@ class Video:
             self.finished.set_result(True)
 
     async def play(self):
+        """Play the video in an external video player."""
         try:
             with open(os.devnull, 'w') as devnull:
                 process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
@@ -274,22 +276,6 @@ class DownloadManager:
             pass
 
 
-class PlaylistManager:
-    def __init__(self, delay=VIDEO_DELAY):
-        self.delay = delay
-        self._playlist = asyncio.Queue()
-        asyncio.ensure_future(self._run())
-
-    def add_video(self, video):
-        asyncio.create_task(self._playlist.put(video))
-
-    async def _run(self):
-        while True:
-            await (await self._playlist.get()).play()
-            self._playlist.task_done()
-            await asyncio.sleep(self.delay)
-
-
 class YDL:
     """Core controller"""
     def __init__(self, archive=None, play=False):
@@ -299,7 +285,6 @@ class YDL:
         self.ui = Ui(self, self._aio_loop)
 
         self.downloads = DownloadManager()
-        self.playlist = PlaylistManager() if play else None
 
         self.videos = dict()
         if archive:
@@ -308,6 +293,11 @@ class YDL:
                 self.ui.add_video(video)
                 if video.status in {"pending", "downloading"}:
                     self._aio_loop.create_task(self._handle_new_video(video))
+
+        self.playlist = asyncio.Queue()
+        self._playlist_task = self._random_playlist_task = None
+        if play:
+            self.start_playlist()
 
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
@@ -350,5 +340,34 @@ class YDL:
                 video.status == "duplicate"
         if video.status in {"pending", "downloading"}:
             await self.downloads.download(video)
-            if self.playlist:
-                self.playlist.add_video(video)
+            await self.playlist.put(video)
+
+    def start_playlist(self):
+        if self._playlist_task is None:
+            self._playlist_task = self._aio_loop.create_task(self._run_playlist())
+
+    def stop_playlist(self):
+        if self._playlist_task:
+            self._playlist_task.cancel()
+            self._playlist_task = None
+
+    async def _run_playlist(self):
+        while True:
+            await (await self._playlist.get()).play()
+            self._playlist.task_done()
+            await asyncio.sleep(VIDEO_DELAY)
+
+    def start_random_playlist(self):
+        if self._random_playlist_task is None:
+            self._random_playlist_task = self._aio_loop.create_task(self._run_random_playlist())
+
+    def stop_random_playlist(self):
+        if self._random_playlist_task:
+            self._random_playlist_task.cancel()
+            self._random_playlist_task = None
+
+    async def _run_random_playlist(self):
+        """Continuously play random videos."""
+        while True:
+            await random.choice(tuple(self.videos.values())).play()
+            await asyncio.sleep(VIDEO_DELAY)

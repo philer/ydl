@@ -278,7 +278,7 @@ class Ui:
                         except IndexError:
                             pass
 
-        elif key == "q" or key == "esc":
+        elif key == "esc":
             self._core.shutdown()
         elif key == "ctrl v":
             try:
@@ -288,6 +288,15 @@ class Ui:
         elif key == "enter" and self._input.edit_text:
             self._handle_urls(self._input.edit_text)
             self._input.edit_text = ""
+        elif key == "q":
+            self._core.start_playlist()
+        elif key == "Q":
+            self._core.stop_playlist()
+        elif key == "r":
+            self._core.start_random_playlist()
+        elif key == "R":
+            self._core.stop_random_playlist()
+
 
     def _handle_urls(self, text):
         """Extract valid urls from user input and pass them on."""
