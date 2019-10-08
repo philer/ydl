@@ -292,7 +292,7 @@ class PlaylistManager:
 
 class YDL:
     """Core controller"""
-    def __init__(self, archive=None, play=False, resume=False):
+    def __init__(self, archive=None, play=False):
         self.archive = archive
         self._aio_loop = asyncio.get_event_loop()
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)

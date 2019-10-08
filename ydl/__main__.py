@@ -9,7 +9,6 @@ Usage:
 Options:
     -p --play       Automatically play videos once they have
                     finished downloading
-    -c --continue   Resume unfinishe download (existing .part/.ytdl files)
     -a --archive-filename
                     File to be used for storing status and URL of downloads
     --no-archive    Start a completely empty session, do not use an archive file
@@ -42,7 +41,7 @@ def main():
     args = docopt(__doc__, version=__version__)
     log_stream = setup_logging(args["--verbose"])
     archive = None if args["--no-archive"] else Archive(args["--archive-filename"])
-    ydl = YDL(archive, play=args["--play"], resume=args["--continue"])
+    ydl = YDL(archive, play=args["--play"])
     try:
         ydl.run()
     finally:
