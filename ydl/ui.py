@@ -67,9 +67,9 @@ class VideoWidget(WidgetWrap):
         video.observers.append(self._handle_update)
 
     def _handle_update(self, _video, prop, _value):
-        if prop in {"status", "progress"}:
-            self.update_status_icon()
         with self._ui.draw_lock:
+            if prop in {"status", "progress"}:
+                self.update_status_icon()
             self._ui._loop.draw_screen()
 
     def update_status_icon(self):
@@ -79,8 +79,7 @@ class VideoWidget(WidgetWrap):
             icon = f"{self._video.progress: >3.0%}"
         else:
             icon = self.status_icon[status]
-        with self._ui.draw_lock:
-            self._status_widget.set_text((style, icon))
+        self._status_widget.set_text((style, icon))
 
     async def _delete(self):
         if await self._ui.confirm("Really delete?"):
@@ -105,13 +104,15 @@ class VideoWidget(WidgetWrap):
         if status == "downloading":
             filled_width = int(size[0] * self._video.progress)
             filled, empty = info[:filled_width], info[filled_width:]
-            self._info_widget.set_text([("downloading_filled" + focused, filled),
-                                        ("downloading" + focused, empty)])
+            info_text = [("downloading_filled" + focused, filled),
+                         ("downloading" + focused, empty)]
         else:
-            self._info_widget.set_text((status + focused, info))
-        self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
-        self._invalidate()
-        return self._root.render(size, focus)
+            info_text = (status + focused, info)
+        with self._ui.draw_lock:
+            self._info_widget.set_text(info_text)
+            self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
+            self._invalidate()
+            return self._root.render(size, focus)
 
 
 class Button(WidgetWrap):
