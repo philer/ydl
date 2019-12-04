@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
+import logging
 import sys
 import threading
 
@@ -11,6 +12,8 @@ from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, Edit,
                    ExitMainLoop, Filler, Frame, LineBox, ListBox, MainLoop,
                    Overlay, Padding, Pile, Text, WidgetPlaceholder, WidgetWrap)
 
+
+log = logging.getLogger(__name__)
 
 class VideoWidget(WidgetWrap):
     """Ugly mix of data model and view widget"""
@@ -211,16 +214,17 @@ class CustomEventLoop(AsyncioEventLoop):
     This code is from https://github.com/urwid/urwid/issues/235#issuecomment-458483802
     """
     def _exception_handler(self, loop, context):
-        exc = context.get('exception')
-        if exc:
-            loop.stop()
-            if not isinstance(exc, ExitMainLoop):
-                # Store the exc_info so we can re-raise after the loop stops
-                self._exc_info = sys.exc_info()
-                if self._exc_info == (None, None, None):
-                    self._exc_info = (type(exc), exc, exc.__traceback__)
-        else:
-            loop.default_exception_handler(context)
+        try:
+            exc = context["exception"]
+        except KeyError:
+            exc = RuntimeError(context["message"])
+        loop.stop()
+        if not isinstance(exc, ExitMainLoop):
+            log.exception(exc)
+            # Store the exc_info so we can re-raise after the loop stops
+            self._exc_info = sys.exc_info()
+            if self._exc_info == (None, None, None):
+                self._exc_info = (type(exc), exc, exc.__traceback__)
 
 
 class Ui:

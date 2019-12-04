@@ -9,6 +9,7 @@ import os
 import random
 import shutil
 import signal
+import subprocess
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -155,12 +156,12 @@ class Video:
     async def play(self):
         """Play the video in an external video player."""
         try:
-            with open(os.devnull, 'w') as devnull:
-                process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
-                                                               self.filename,
-                                                               stdout=devnull,
-                                                               stderr=devnull)
-                await process.wait()
+            process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
+                                                           "--fullscreen",
+                                                           self.filename,
+                                                           stdout=subprocess.DEVNULL,
+                                                           stderr=subprocess.DEVNULL)
+            await process.wait()
         except asyncio.CancelledError:
             process.terminate()
             raise
@@ -325,9 +326,8 @@ class YDL:
         if url in self.videos:
             original = self.videos[url]
             video.sync_to_original(original)
-            if self.playlist:
-                await original.finished
-                self.playlist.add_video(video)
+            await original.finished
+            await self.playlist.put(video)
         else:
             self.videos[url] = video
             await self._handle_new_video(video)
@@ -344,25 +344,29 @@ class YDL:
 
     def start_playlist(self):
         if self._playlist_task is None:
+            log.debug("Starting queue playback")
             self._playlist_task = self._aio_loop.create_task(self._run_playlist())
 
     def stop_playlist(self):
         if self._playlist_task:
+            log.debug("Stopping queue playback")
             self._playlist_task.cancel()
             self._playlist_task = None
 
     async def _run_playlist(self):
         while True:
-            await (await self._playlist.get()).play()
-            self._playlist.task_done()
+            await (await self.playlist.get()).play()
+            self.playlist.task_done()
             await asyncio.sleep(VIDEO_DELAY)
 
     def start_random_playlist(self):
         if self._random_playlist_task is None:
+            log.debug("Starting random playback")
             self._random_playlist_task = self._aio_loop.create_task(self._run_random_playlist())
 
     def stop_random_playlist(self):
         if self._random_playlist_task:
+            log.debug("Starting random playback")
             self._random_playlist_task.cancel()
             self._random_playlist_task = None
 
