@@ -4,7 +4,6 @@
 import asyncio
 import logging
 import sys
-import threading
 
 import pyperclip
 import urwid
@@ -67,10 +66,9 @@ class VideoWidget(WidgetWrap):
         video.observers.append(self._handle_update)
 
     def _handle_update(self, _video, prop, _value):
-        with self._ui.draw_lock:
-            if prop in {"status", "progress"}:
-                self.update_status_icon()
-            self._ui._loop.draw_screen()
+        if prop in {"status", "progress"}:
+            self.update_status_icon()
+        self._ui._loop.draw_screen()
 
     def update_status_icon(self):
         status = self._video.status
@@ -108,11 +106,10 @@ class VideoWidget(WidgetWrap):
                          ("downloading" + focused, empty)]
         else:
             info_text = (status + focused, info)
-        with self._ui.draw_lock:
-            self._info_widget.set_text(info_text)
-            self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
-            self._invalidate()
-            return self._root.render(size, focus)
+        self._info_widget.set_text(info_text)
+        self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
+        self._invalidate()
+        return self._root.render(size, focus)
 
 
 class Button(WidgetWrap):
@@ -255,8 +252,6 @@ class Ui:
         self._loop.screen.set_terminal_properties(
             colors=256, bright_is_bold=False, has_underline=True)
 
-        self.draw_lock = threading.RLock()
-
     def run_loop(self):
         self._loop.run()
 
@@ -312,9 +307,8 @@ class Ui:
     def add_video(self, video):
         """Wrap a new video and add it to the display."""
         widget = VideoWidget(self, video)
-        with self.draw_lock:
-            self._videos.body.append(widget)
-            self._videos.focus_position = len(self._videos.body) - 1
+        self._videos.body.append(widget)
+        self._videos.focus_position = len(self._videos.body) - 1
 
     async def confirm(self, message):
         return "continue" == await Dialog(message, parent=self._root)

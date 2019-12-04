@@ -238,7 +238,8 @@ class Archive:
 class DownloadManager:
     """Manages video download workers and parallel connections per host."""
 
-    def __init__(self):
+    def __init__(self, aio_loop):
+        self._aio_loop = aio_loop
         self._executors = defaultdict(partial(ThreadPoolExecutor, max_workers=MAX_HOST_POOL_SIZE))
         self._max_workers_sem = asyncio.BoundedSemaphore(value=MAX_POOL_SIZE)
         self._interrupted = False
@@ -248,7 +249,7 @@ class DownloadManager:
             if self._interrupted:
                 return
             ex = self._executors[video.hostname]
-            await asyncio.get_running_loop().run_in_executor(ex, self._work, video)
+            await self._aio_loop.run_in_executor(ex, self._work, video)
 
     def shutdown(self):
         self._interrupted = True
@@ -266,7 +267,9 @@ class DownloadManager:
 
     def _work(self, video):
         """Perform actual downloads - this is run in a thread."""
-        hooks = [self._raise_interrupt, video.set_download_info]
+        def set_download_info(*args):
+            self._aio_loop.call_soon_threadsafe(video.set_download_info, *args)
+        hooks = [self._raise_interrupt, set_download_info]
         ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=hooks))
         video.status = "downloading"
         try:
@@ -282,10 +285,11 @@ class YDL:
     def __init__(self, archive=None, play=False):
         self.archive = archive
         self._aio_loop = asyncio.get_event_loop()
+        self._aio_loop.set_debug(True)
         self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self.ui = Ui(self, self._aio_loop)
 
-        self.downloads = DownloadManager()
+        self.downloads = DownloadManager(aio_loop = self._aio_loop)
 
         self.videos = dict()
         if archive:
