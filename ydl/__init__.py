@@ -14,7 +14,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from functools import partial
-from typing import Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import urlparse
 
 import youtube_dl
@@ -67,8 +67,8 @@ class Video:
 
     def __post_init__(self):
         self.progress = 0
-        self.observers = []
         self.finished = asyncio.get_event_loop().create_future()
+        self.observers = []
 
     def __setattr__(self, name, value):
         """A simplistic observer pattern."""
@@ -88,23 +88,6 @@ class Video:
         if None in (self.extractor, self.id, self.title, self.ext):
             raise AttributeError(f"Can't generate filename for {self}.")
         return f"{self.extractor}-{self.id}_{self.title}.{self.ext}"
-
-    def prepare_meta(self):
-        """
-        Download meta data for this video. Some of the classes functionality
-        will not be available until this is done.
-        """
-        ydl = youtube_dl.YoutubeDL(ydl_settings)
-        try:
-            meta = ydl.extract_info(self.url, download=False)
-        except youtube_dl.utils.DownloadError:
-            self.status = "error"
-        else:
-            for prop in self._meta_properties:
-                try:
-                    setattr(self, prop, meta[prop])
-                except KeyError:
-                    pass
 
     def sync_to_original(self, original):
         """
@@ -235,41 +218,102 @@ class Archive:
                     archive.write(" ".join(parts) + "\n")
 
 
+class ThreadsafeProxy:
+    """
+    Wrap an object so all method calls and attribute assignments are deferred
+    to asyncio's call_soon_threadsafe.
+
+    Limitations:
+    - Property get-access is _not_ deferred. That means if an @property's
+      getter does significant non-threadsafe work it will need extra treatment.
+    - Any callable property is treated as a method and wrapped on access.
+    """
+
+    # This is a very basic proxy implementation. If additional capabilites
+    # become necessary in the future, this may be useful:
+    # https://code.activestate.com/recipes/496741-object-proxying/
+
+    def __init__(self, instance, loop=None):
+        call = (loop or asyncio.get_event_loop()).call_soon_threadsafe
+        object.__setattr__(self, "_instance", instance)
+        object.__setattr__(self, "_call", call)
+
+    def __getattr__(self, name):
+        if callable(value := getattr(self._instance, name)):
+            return partial(self._call, value)
+        return value
+
+    def __setattr__(self, name, value):
+        self._call(setattr, self._instance, name, value)
+
+    def __delattr__(self, name):
+        self._call(delattr, self._instance, name)
+
+    def __dir__(self):
+        return dir(self._instance)
+
+class Interrupt(Exception):
+    """Used to break out of youtube-dl's blocking download via hook."""
+    pass
+
 class DownloadManager:
     """Manages video download workers and parallel connections per host."""
 
+
     def __init__(self, aio_loop):
         self._aio_loop = aio_loop
-        self._executors = defaultdict(partial(ThreadPoolExecutor, max_workers=MAX_HOST_POOL_SIZE))
+        self._meta_executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
+        self._download_executors = defaultdict(partial(ThreadPoolExecutor,
+                                                       max_workers=MAX_HOST_POOL_SIZE))
         self._max_workers_sem = asyncio.BoundedSemaphore(value=MAX_POOL_SIZE)
         self._interrupted = False
 
-    async def download(self, video):
+    def shutdown(self):
+        """Interrupt all running threads and wait for them to return."""
+        self._interrupted = True
+        for ex in self._download_executors.values():
+            ex.shutdown(wait=True)
+
+    def _raise_interrupt(self, _: Any):
+        """
+        Terminate a worker thread when we want to quit.
+        This will be called periodically via youtube-dl's download feedback hook.
+        """
+        if self._interrupted:
+            raise Interrupt
+
+    async def download_meta(self, video: Video):
+        """
+        Download meta data for a given video. Some of a Video instance's
+        functionality will not be available until this is done.
+        """
+        proxy = ThreadsafeProxy(video, loop=self._aio_loop)
+        await self._aio_loop.run_in_executor(self._meta_executor,
+                                             self._download_meta, proxy)
+
+    def _download_meta(self, video: ThreadsafeProxy):
+        """Perform actual meta info download - this should run in a thread."""
+        ydl = youtube_dl.YoutubeDL(ydl_settings)
+        try:
+            meta = ydl.extract_info(video.url, download=False)
+        except youtube_dl.utils.DownloadError:
+            video.status = "error"
+        else:
+            for prop in Video._meta_properties:
+                setattr(video, prop, meta.get(prop))
+
+    async def download(self, video: Video):
+        """Download a given video as soon as a slot is open."""
         async with self._max_workers_sem:
             if self._interrupted:
                 return
-            ex = self._executors[video.hostname]
-            await self._aio_loop.run_in_executor(ex, self._work, video)
+            ex = self._download_executors[video.hostname]
+            proxy = ThreadsafeProxy(video, loop=self._aio_loop)
+            await self._aio_loop.run_in_executor(ex, self._download, proxy)
 
-    def shutdown(self):
-        self._interrupted = True
-        for ex in self._executors.values():
-            ex.shutdown(wait=True)
-
-    class Interrupt(Exception):
-        """Used to break out of youtube-dl's blocking download via hook."""
-        pass
-
-    def _raise_interrupt(self, _):
-        """Called by youtube-dl periodically - used to break out when we want to quit."""
-        if self._interrupted:
-            raise self.Interrupt()
-
-    def _work(self, video):
-        """Perform actual downloads - this is run in a thread."""
-        def set_download_info(*args):
-            self._aio_loop.call_soon_threadsafe(video.set_download_info, *args)
-        hooks = [self._raise_interrupt, set_download_info]
+    def _download(self, video: ThreadsafeProxy):
+        """Perform actual downloads - this should run in a thread."""
+        hooks = [self._raise_interrupt, video.set_download_info]
         ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=hooks))
         video.status = "downloading"
         try:
@@ -286,7 +330,6 @@ class YDL:
         self.archive = archive
         self._aio_loop = asyncio.get_event_loop()
         self._aio_loop.set_debug(True)
-        self._executor = ThreadPoolExecutor(max_workers=MAX_POOL_SIZE)
         self.ui = Ui(self, self._aio_loop)
 
         self.downloads = DownloadManager(aio_loop = self._aio_loop)
@@ -338,7 +381,7 @@ class YDL:
 
     async def _handle_new_video(self, video):
         if video.status == "pending":
-            await self._aio_loop.run_in_executor(self._executor, video.prepare_meta)
+            await self.downloads.download_meta(video)
             if video.status != "error" and os.path.isfile(video.filename):
                 # multiple URLs pointing to the same video
                 video.status == "duplicate"
