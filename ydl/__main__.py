@@ -7,8 +7,7 @@ Usage:
     ydl -h
 
 Options:
-    -p --play       Automatically play videos once they have
-                    finished downloading
+    -p --play       Automatically play videos once they have finished downloading.
     -a --archive-filename
                     File to be used for storing status and URL of downloads
     --no-archive    Start a completely empty session, do not use an archive file
