@@ -9,7 +9,8 @@ import pyperclip
 import urwid
 from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, Edit,
                    ExitMainLoop, Filler, Frame, LineBox, ListBox, MainLoop,
-                   Overlay, Padding, Pile, Text, WidgetPlaceholder, WidgetWrap)
+                   Overlay, Padding, Pile, SimpleFocusListWalker, Text,
+                   WidgetPlaceholder, WidgetWrap)
 
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class VideoWidget(WidgetWrap):
     def _handle_update(self, _video, prop, _value):
         if prop in {"status", "progress"}:
             self.update_status_icon()
+        self._invalidate()
         self._ui._loop.draw_screen()
 
     def update_status_icon(self):
@@ -94,8 +96,16 @@ class VideoWidget(WidgetWrap):
         else:
             return key
 
+    def rows(self, size, focus=False):
+        if self._video.status == "deleted" and not self._ui._show_deleted:
+            return 0
+        return super().rows(size, focus)
+
+
     def render(self, size, focus=False):
         """Update appearance based on video status, widget focus and size."""
+        if self._video.status == "deleted" and not self._ui._show_deleted:
+            return Pile([]).render(size)
         status = self._video.status
         focused = "_focus" if focus else ""
         info = self._info.ljust(size[0])
@@ -108,7 +118,6 @@ class VideoWidget(WidgetWrap):
             info_text = (status + focused, info)
         self._info_widget.set_text(info_text)
         self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
-        self._invalidate()
         return self._root.render(size, focus)
 
 
@@ -240,7 +249,7 @@ class Ui:
         self._aio_loop = aio_loop
 
         self._input = Edit(caption=("prompt", "⟩ "))
-        self._videos = ListBox([])
+        self._videos = ListBox(SimpleFocusListWalker([]))
         footer = Pile([AttrMap(Divider("─"), "divider"), self._input])
         self._main = Frame(body=self._videos, footer=footer)
         self._root = WidgetPlaceholder(self._main)
@@ -251,6 +260,8 @@ class Ui:
                               unhandled_input=self._handle_global_input)
         self._loop.screen.set_terminal_properties(
             colors=256, bright_is_bold=False, has_underline=True)
+
+        self._show_deleted = True
 
     def run_loop(self):
         self._loop.run()
@@ -278,7 +289,7 @@ class Ui:
                         except IndexError:
                             pass
 
-        elif key == "esc":
+        elif key == "esc" or key == "q":
             self._core.shutdown()
         elif key == "ctrl v":
             try:
@@ -288,15 +299,18 @@ class Ui:
         elif key == "enter" and self._input.edit_text:
             self._handle_urls(self._input.edit_text)
             self._input.edit_text = ""
-        elif key == "q":
+        elif key == "p":
             self._core.start_playlist()
-        elif key == "Q":
+        elif key == "P":
             self._core.stop_playlist()
         elif key == "r":
             self._core.start_random_playlist()
         elif key == "R":
             self._core.stop_random_playlist()
-
+        elif key == "h":
+            self._show_deleted = not self._show_deleted
+            for v in self._videos.body:
+                v._invalidate()
 
     def _handle_urls(self, text):
         """Extract valid urls from user input and pass them on."""
