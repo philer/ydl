@@ -157,6 +157,8 @@ class Video:
         Remove this video file from the file system and mark it as deleted.
         TODO: Also interrupt any pending or ongoing download and cleanup temporary files.
         """
+        if self._original:
+            return self._original.delete()
         if self.status in {"deleted", "error"}:
             return
         elif self.status == "duplicate":
@@ -259,7 +261,6 @@ class Interrupt(Exception):
 
 class DownloadManager:
     """Manages video download workers and parallel connections per host."""
-
 
     def __init__(self, aio_loop):
         self._aio_loop = aio_loop
