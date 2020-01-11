@@ -139,10 +139,17 @@ class Video:
 
     async def play(self):
         """Play the video in an external video player."""
+        if self.status == "finished":
+            filename = self.filename
+        elif self.status == "downloading":
+            filename = self.filename + ".part"
+        else:
+            return
+
         try:
             process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
                                                            "--fullscreen",
-                                                           self.filename,
+                                                           filename,
                                                            stdout=subprocess.DEVNULL,
                                                            stderr=subprocess.DEVNULL)
             await process.wait()
