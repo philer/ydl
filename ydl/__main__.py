@@ -24,16 +24,23 @@ from . import __version__, Archive, YDL
 
 
 def setup_logging(verbosity: int):
-    root_logger = logging.getLogger(__package__)
-    root_logger.setLevel((logging.ERROR, logging.INFO, logging.DEBUG)[verbosity])
-    log_stream = io.StringIO()
     if verbosity > 1:
         fmt = "%(levelname)s (%(name)s) %(message)s"
     else:
         fmt = "%(message)s"
+    lvl = (logging.ERROR, logging.INFO, logging.DEBUG)[verbosity]
+
+    log_stream = io.StringIO()
     handler = logging.StreamHandler(log_stream)
     handler.setFormatter(logging.Formatter(fmt))
+
+    root_logger = logging.getLogger(__package__)
+    root_logger.setLevel(lvl)
     root_logger.addHandler(handler)
+    youtube_dl_logger = logging.getLogger("youtube_dl")
+    youtube_dl_logger.setLevel(lvl)
+    youtube_dl_logger.addHandler(handler)
+
     return log_stream
 
 def main():

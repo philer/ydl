@@ -329,7 +329,6 @@ class YDL:
     def __init__(self, archive=None, play=False):
         self.archive = archive
         self._aio_loop = asyncio.get_event_loop()
-        self._aio_loop.set_debug(True)
         self.ui = Ui(self, self._aio_loop)
 
         self.downloads = DownloadManager(aio_loop = self._aio_loop)
