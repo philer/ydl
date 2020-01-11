@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 import asyncio
-import dataclasses
 import logging
 import os
 import random
@@ -12,8 +11,9 @@ import signal
 import subprocess
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import date
-from functools import partial
+from functools import partial, wraps
 from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -54,11 +54,13 @@ ydl_settings = {
 }
 
 
-@dataclasses.dataclass
+@dataclass
 class Video:
     """Primary model."""
     url: str
     status: str = "pending"
+    progress: int = 0
+    finished: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
 
     _meta_properties = "extractor", "id", "title", "ext"
     extractor: str = None
@@ -66,11 +68,20 @@ class Video:
     title: str = "(no title)"
     ext: str = None
 
-    def __post_init__(self):
-        self.progress = 0
-        self.finished = asyncio.get_event_loop().create_future()
-        self.observers = []
+    _original: Video = None
+    observers: List[callable] = field(default_factory=list)
 
+    def original(method):
+        """Method decorator to only call state mutating methods
+        of duplicates on original."""
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if self._original:
+                return method(self._original, *args, **kwargs)
+            return method(self, *args, **kwargs)
+        return wrapped
+
+    @original
     def __setattr__(self, name, value):
         """A simplistic observer pattern."""
         super().__setattr__(name, value)
@@ -95,17 +106,18 @@ class Video:
         This video has been identified as a duplicate
         and should have its meta info mirror that of the original.
         """
-        self._original = original
         self.status = "duplicate"
         for prop in self._meta_properties:
             setattr(self, prop, getattr(original, prop))
         original.observers.append(self._handle_update)
+        self._original = original
 
     def _handle_update(self, original, prop, value):
         """Update a meta property mirrored from another instance."""
         if prop in self._meta_properties:
             setattr(self, prop, value)
 
+    @original
     def set_download_info(self, data):
         # from https://github.com/ytdl-org/youtube-dl/blob/master/youtube_dl/YoutubeDL.py
         # * status: One of "downloading", "error", or "finished".
@@ -137,6 +149,7 @@ class Video:
         elif data["status"] == "finished":
             self.finished.set_result(True)
 
+    @original
     async def play(self):
         """Play the video in an external video player."""
         if self.status == "finished":
@@ -159,13 +172,12 @@ class Video:
         except Exception as e:
             log.exception(e)
 
+    @original
     def delete(self):
         """
         Remove this video file from the file system and mark it as deleted.
         TODO: Also interrupt any pending or ongoing download and cleanup temporary files.
         """
-        if self._original:
-            return self._original.delete()
         if self.status in {"deleted", "error"}:
             return
         elif self.status == "duplicate":
@@ -179,6 +191,7 @@ class Video:
             os.remove(self.filename)  # TODO some error handling on this
             self.status = "deleted"
 
+    del original
 
 class Archive:
     """Simple database file for remembering past downloads."""
