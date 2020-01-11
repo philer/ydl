@@ -63,7 +63,7 @@ class Video:
     _meta_properties = "extractor", "id", "title", "ext"
     extractor: str = None
     id: str = None
-    title: str = None
+    title: str = "(no title)"
     ext: str = None
 
     def __post_init__(self):
@@ -199,7 +199,7 @@ class Archive:
                 for lineno, line in enumerate(map(str.rstrip, archive)):
                     if line:
                         parts = line.split(None, len(self._video_properties) - 1)
-                        if len(parts) in {2, 6}:
+                        if len(parts) in {2, 5, 6}:
                             yield Video(**dict(zip(self._video_properties, parts)))
                         else:
                             raise ValueError(f"Invalid archive state on line {lineno}: '{line}'")
