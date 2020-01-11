@@ -84,12 +84,23 @@ class VideoWidget(WidgetWrap):
         if await self._ui.confirm("Really delete?"):
             self._video.delete()
 
+    async def _re_download(self):
+        if (self._video.status in {"deleted", "error"}
+            and await self._ui.confirm("Download this video again?")):
+            self._video.status = "pending"
+
+            # TODO This feels wrong.
+            await self._ui._core._handle_new_video(self._video)
+
     def selectable(self):
         return True
 
     def keypress(self, _size, key):
-        if key == "p" or key == "enter":
-            self._ui._aio_loop.create_task(self._video.play())
+        if key == "enter" or key == "right" or key == " ":
+            if self._video.status in ("error", "deleted"):
+                self._ui._aio_loop.create_task(self._re_download())
+            else:
+                self._ui._aio_loop.create_task(self._video.play())
         elif key == "d" or key == "delete":
             self._ui._aio_loop.create_task(self._delete())
         else:
