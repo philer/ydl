@@ -18,6 +18,7 @@ from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import urlparse
 
 import youtube_dl
+import requests
 
 from .ui import Ui
 
@@ -293,6 +294,14 @@ class DownloadManager:
 
     def _download_meta(self, video: ThreadsafeProxy):
         """Perform actual meta info download - this should run in a thread."""
+        try:
+            # resolve/simplify URL
+            response = requests.head(video.url)
+            video.url = response.url
+        except requests.exceptions.RequestException:
+            video.status = "error"
+            return
+
         ydl = youtube_dl.YoutubeDL(ydl_settings)
         try:
             meta = ydl.extract_info(video.url, download=False)
@@ -301,6 +310,9 @@ class DownloadManager:
         else:
             for prop in Video._meta_properties:
                 setattr(video, prop, meta.get(prop))
+            filename_props = {"extractor", "id", "title", "ext"}
+            if set(meta.keys()) & filename_props != filename_props:
+                video.status = "error"
 
     async def download(self, video: Video):
         """Download a given video as soon as a slot is open."""

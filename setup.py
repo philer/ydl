@@ -23,9 +23,10 @@ setup(name='ydl',
       ],
       packages=['ydl'],
       install_requires=[
-          'youtube_dl',
           'docopt',
-          'urwid',
           'pyperclip',
+          'requests',
+          'urwid',
+          'youtube_dl',
       ],
       entry_points={'console_scripts': ['ydl = ydl.__main__:main']})
