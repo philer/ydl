@@ -70,7 +70,6 @@ class VideoWidget(WidgetWrap):
         if prop in {"status", "progress"}:
             self.update_status_icon()
         self._invalidate()
-        self._ui._loop.draw_screen()
 
     def update_status_icon(self):
         status = self._video.status
