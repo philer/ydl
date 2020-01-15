@@ -188,10 +188,14 @@ class Video:
             ...  # TODO interrupt
         else:
             log.info(f"Removing file '{self.filename}'.")
-            os.remove(self.filename)  # TODO some error handling on this
+            try:
+                os.remove(self.filename)
+            except OSError as ose:
+                log.warning(ose)
             self.status = "deleted"
 
     del original
+
 
 class Archive:
     """Simple database file for remembering past downloads."""
