@@ -45,7 +45,7 @@ class VideoWidget(WidgetWrap):
     @property
     def _info(self):
         if self._video.id is not None and self._video.title is not None:
-            return f"{self._video.id} - {self._video.title}"
+            return f"{self._video.extractor}:{self._video.id} - {self._video.title}"
         return self._video.url
 
     def __init__(self, ui, video):
