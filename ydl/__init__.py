@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 import shutil
 import signal
 import subprocess
@@ -97,11 +98,14 @@ class Video:
     def hostname(self):
         return urlparse(self.url).hostname
 
+    _re_unsafe_characters = re.compile(r"(?:_|[^\w()[\]])+")
+
     @property
     def filename(self):
         if None in (self.extractor, self.id, self.title, self.ext):
             raise AttributeError(f"Can't generate filename for {self}.")
-        return f"{self.extractor}-{self.id}_{self.title}.{self.ext}"
+        title = self._re_unsafe_characters.sub("_", self.title).strip("_")
+        return f"{self.extractor}-{self.id}_{title}.{self.ext}"
 
     def sync_to_original(self, original):
         """
@@ -354,7 +358,9 @@ class DownloadManager:
     def _download(self, video: ThreadsafeProxy):
         """Perform actual downloads - this should run in a thread."""
         hooks = [self._raise_interrupt, video.set_download_info]
-        ydl = youtube_dl.YoutubeDL(dict(ydl_settings, progress_hooks=hooks))
+        ydl = youtube_dl.YoutubeDL(dict(ydl_settings,
+                                        outtmpl=video.filename,
+                                        progress_hooks=hooks))
         video.status = "downloading"
         try:
             ydl.download([video.url])
