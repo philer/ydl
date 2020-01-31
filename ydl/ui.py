@@ -179,6 +179,19 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         bottom = "╿" * bottom_half + "│" * bottom_full
         self._bar.set_text(top + middle + bottom)
 
+    def scroll_to(self, fraction):
+        """Scroll the ListBox to center the appropriate widget."""
+        self._list_box.focus_position = int(fraction * len(self._list_box.body))
+
+    def mouse_event(self, size, event, button, col, row, focus):
+        maxcol, maxrow = size
+        if col == maxcol - 1:
+            if button == 1 and event in {'mouse press', 'mouse drag'}:
+                self.scroll_to(row / maxrow)
+                return True
+            return False
+        return self._list_box.mouse_event(size, event, button, col, row, focus)
+
 
 class Button(WidgetWrap):
     """Custom button with a simpler style."""
