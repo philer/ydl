@@ -201,6 +201,33 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         return False
 
 
+class LogHandlerWidget(WidgetWrap, logging.Handler):
+    """Show log messages in a scrollable window for live debugging."""
+
+    palette = (
+        ("log_DEBUG", "",  ""),
+        ("log_INFO", "light blue",  ""),
+        ("log_WARNING", "yellow", ""),
+        ("log_ERROR", "light red", ""),
+        ("log_EXCEPTION", "log_ERROR"),
+        ("log_CRITICAL", "log_ERROR"),
+        ("log_NOTSET", "log_DEBUG"),
+    )
+
+    def __init__(self, logger=None):
+        self._records = ListBox(SimpleFocusListWalker([]))
+        WidgetWrap.__init__(self, Scrollbar(self._records))
+
+        logging.Handler.__init__(self)
+        self._logger = logger or logging.getLogger(__package__)
+        self._logger.addHandler(self)
+
+    def emit(self, record):
+        style = f"log_{record.levelname}"
+        text = f"{record.levelname} {record.name}: {record.getMessage()}"
+        self._records.body.append(Text((style, text)))
+        self._records.focus_position = len(self._records.body) - 1
+
 class Button(WidgetWrap):
     """Custom button with a simpler style."""
 
@@ -318,7 +345,9 @@ class CustomEventLoop(AsyncioEventLoop):
 
 class Ui:
     palette = (
+        # (name, foreground, background, mono, foreground_high, background_high)
         *VideoWidget.palette,
+        *LogHandlerWidget.palette,
         ("divider",         "dark gray",   "", "", "#666", ""),
         ("divider_focus",   "light gray",  "", "", "#aaa", ""),
         ("button",          "bold",        ""),
@@ -330,7 +359,10 @@ class Ui:
         self._aio_loop = aio_loop
 
         self._videos = ListBox(SimpleFocusListWalker([]))
-        self._root = WidgetPlaceholder(Scrollbar(self._videos))
+        self._log_window = Pile([AttrMap(Divider("─"), "divider"), (5, LogHandlerWidget())]), ('pack', None)
+        self._log_window_visible = False
+        self._visible_windows = Pile([Scrollbar(self._videos)])
+        self._root = WidgetPlaceholder(self._visible_windows)
 
         self._loop = MainLoop(widget=self._root,
                               palette=self.palette,
@@ -367,6 +399,8 @@ class Ui:
             self._show_deleted = not self._show_deleted
             for v in self._videos.body:
                 v._invalidate()
+        elif key == "l":
+            self.toggle_log_window()
 
     def _handle_urls(self, text):
         """Extract valid urls from user input and pass them on."""
@@ -379,6 +413,13 @@ class Ui:
         widget = VideoWidget(self, video)
         self._videos.body.append(widget)
         self._videos.focus_position = len(self._videos.body) - 1
+
+    def toggle_log_window(self):
+        self._log_window_visible = not self._log_window_visible
+        if self._log_window_visible:
+            self._visible_windows.contents.append(self._log_window)
+        else:
+            self._visible_windows.contents.remove(self._log_window)
 
     async def confirm(self, message):
         return "continue" == await Dialog(message, parent=self._root)
