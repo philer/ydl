@@ -190,7 +190,15 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
                 self.scroll_to(row / maxrow)
                 return True
             return False
-        return self._list_box.mouse_event(size, event, button, col, row, focus)
+        if self._list_box.mouse_event(size, event, button, col, row, focus):
+            return True
+        if 4 <= button <= 5:  # scrollwheel
+            try:
+                self._list_box.focus_position += 1 if button == 5 else -1
+            except IndexError:
+                pass
+            return True
+        return False
 
 
 class Button(WidgetWrap):
@@ -344,26 +352,7 @@ class Ui:
         raise ExitMainLoop()
 
     def _handle_global_input(self, key):
-        if isinstance(key, tuple) and key[0] == "mouse press":
-            _event, button, _x, _y = key
-            if 4 <= button <= 5:
-                if self._main.focus_position == "body":
-                    try:
-                        if button == 4:
-                            self._videos.focus_position -= 1
-                        else:
-                            self._videos.focus_position += 1
-                    except IndexError:
-                        pass
-                else:
-                    self._main.focus_position = "body"
-                    if button == 4:
-                        try:
-                            self._videos.focus_position = len(self._videos.body) - 1
-                        except IndexError:
-                            pass
-
-        elif key == "esc" or key == "q":
+        if key == "esc" or key == "q":
             self._core.shutdown()
         elif key == "ctrl v":
             try:
