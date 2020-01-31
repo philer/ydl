@@ -151,6 +151,10 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         self._list_box.calculate_visible(size, focus)
 
         focus_widget, _ = self._list_box.get_focus()
+        if not focus_widget:
+            self._bar.set_text("│" * maxrow)
+            return
+
         focus_offset, focus_inset = self._list_box.get_focus_offset_inset(size)
         total_height, height_above = 0, 0
         for w in self._list_box.body:
