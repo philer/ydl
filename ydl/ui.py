@@ -7,9 +7,9 @@ import sys
 
 import pyperclip
 import urwid
-from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider,
-                   ExitMainLoop, Filler, Frame, LineBox, ListBox, MainLoop,
-                   Overlay, Padding, Pile, SimpleFocusListWalker, Text,
+from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
+                   Filler, LineBox, ListBox, MainLoop, Overlay, Padding, Pile,
+                   SimpleFocusListWalker, Text,
                    WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
 
@@ -214,13 +214,13 @@ class LogHandlerWidget(WidgetWrap, logging.Handler):
         ("log_NOTSET", "log_DEBUG"),
     )
 
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, level=logging.DEBUG):
         self._records = ListBox(SimpleFocusListWalker([]))
         WidgetWrap.__init__(self, Scrollbar(self._records))
 
         logging.Handler.__init__(self)
-        self._logger = logger or logging.getLogger(__package__)
-        self._logger.addHandler(self)
+        self.setLevel(level)
+        (logger or logging.getLogger(__package__)).addHandler(self)
 
     def emit(self, record):
         style = f"log_{record.levelname}"

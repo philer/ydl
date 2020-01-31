@@ -42,13 +42,15 @@ MAX_HOST_POOL_SIZE = 3
 
 log = logging.getLogger(__name__)
 
+_youtube_dl_logger = logging.getLogger(__package__ + ".youtube_dl")
+_youtube_dl_logger.setLevel(logging.INFO)
 ydl_settings = {
     "format": "best",
     "noplaylist": True,
     "call_home": False,
     "cachedir": False,
     # "download_archive": ".youtube_dl_archive",
-    "logger": logging.getLogger("youtube_dl"),
+    "logger": _youtube_dl_logger,
     "outtmpl": "%(extractor)s-%(id)s_%(title)s.%(ext)s"
     # "outtmpl": "/tmp/ydl/" + youtube_dl.DEFAULT_OUTTMPL,
 }
@@ -158,14 +160,15 @@ class Video:
             filename = self.filename + ".part"
         else:
             return
-
+        log.info("Playing %s", self.filename)
         try:
             process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
                                                            "--fullscreen",
                                                            filename,
                                                            stdout=subprocess.DEVNULL,
                                                            stderr=subprocess.DEVNULL)
-            await process.wait()
+            if 0 != await process.wait():
+                raise Exception(f"Playing '{self.filename}' failed.")
         except asyncio.CancelledError:
             process.terminate()
             raise
@@ -385,13 +388,17 @@ class YDL:
 
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
+        log.debug("Starting main loop.")
         self.ui.run_loop()
+        log.debug("Waiting for pending tasks to finish…")
         self.downloads.shutdown()
         self._aio_loop.run_until_complete(self._cleanup_tasks())
         self._aio_loop.close()
         self.archive.update(self.videos.values())
+        log.debug("Bye.")
 
     def shutdown(self):
+        log.debug("Shutting down.")
         self.ui.halt_loop()
 
     async def _cleanup_tasks(self):
@@ -407,6 +414,7 @@ class YDL:
         video = Video(url)
         self.ui.add_video(video)
         if url in self.videos:
+            log.info("Duplicate detected.")
             original = self.videos[url]
             video.sync_to_original(original)
             await original.finished
@@ -417,12 +425,15 @@ class YDL:
 
     async def _handle_new_video(self, video):
         if video.status == "pending":
+            log.debug("Downloading meta info.")
             await self.downloads.download_meta(video)
             if video.status != "error" and os.path.isfile(video.filename):
                 # multiple URLs pointing to the same video
                 video.status == "duplicate"
         if video.status in {"pending", "downloading"}:
+            log.info("Starting download from %s", video.url)
             await self.downloads.download(video)
+            log.info("Finished download from %s", video.url)
             await self.playlist.put(video)
 
     def start_playlist(self):
@@ -449,7 +460,7 @@ class YDL:
 
     def stop_random_playlist(self):
         if self._random_playlist_task:
-            log.debug("Starting random playback")
+            log.debug("Stopping random playback")
             self._random_playlist_task.cancel()
             self._random_playlist_task = None
 
