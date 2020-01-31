@@ -7,7 +7,7 @@ import sys
 
 import pyperclip
 import urwid
-from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, Edit,
+from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider,
                    ExitMainLoop, Filler, Frame, LineBox, ListBox, MainLoop,
                    Overlay, Padding, Pile, SimpleFocusListWalker, Text,
                    WidgetDecoration, WidgetPlaceholder, WidgetWrap)
@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 class VideoWidget(WidgetWrap):
     """Ugly mix of data model and view widget"""
 
-    palette = [
+    palette = (
         ("pending",            "light gray",  "", "", "g70",  ""),
         ("duplicate",          "yellow",      "", "", "#da0", ""),
         ("downloading",        "light blue",  "", "", "#6dd", ""),
@@ -28,9 +28,9 @@ class VideoWidget(WidgetWrap):
         ("error",              "light red",   "", "", "#d66", ""),
         ("deleted",            "dark gray,strikethrough", "", "", "#666,strikethrough", ""),
         ("deleted_icon",       "dark gray",   "", "", "#666", ""),
-    ]
-    palette += [(p[0] + "_focus", p[1] + ",bold", *p[2:4], p[4] + ",bold", p[5])
-                for p in palette if not p[0].endswith("_icon")]
+    )
+    palette += tuple((p[0] + "_focus", p[1] + ",bold", *p[2:4], p[4] + ",bold", p[5])
+                     for p in palette if not p[0].endswith("_icon"))
 
     status_icon = {
         "pending": " ⧗ ",
@@ -55,10 +55,8 @@ class VideoWidget(WidgetWrap):
         self._status_widget = Text(" ? ")
         self.update_status_icon()
         self._info_widget = Text("", wrap='clip')
-        self._divider = Text(("divider", "│"))
         columns = [
             (3, self._status_widget),
-            (1, self._divider),
             self._info_widget,
         ]
         self._root = Columns(columns, dividechars=1)
@@ -111,7 +109,6 @@ class VideoWidget(WidgetWrap):
             return 0
         return super().rows(size, focus)
 
-
     def render(self, size, focus=False):
         """Update appearance based on video status, widget focus and size."""
         if self._video.status == "deleted" and not self._ui._show_deleted:
@@ -127,7 +124,6 @@ class VideoWidget(WidgetWrap):
         else:
             info_text = (status + focused, info)
         self._info_widget.set_text(info_text)
-        self._divider.set_text(("divider_focus", "┃") if focus else ("divider", "│"))  # ╽╿
         return self._root.render(size, focus)
 
 
@@ -321,7 +317,6 @@ class Ui:
         *VideoWidget.palette,
         ("divider",         "dark gray",   "", "", "#666", ""),
         ("divider_focus",   "light gray",  "", "", "#aaa", ""),
-        ("prompt",          "light green", ""),
         ("button",          "bold",        ""),
         ("button_focus",    "bold,standout",""),
     )
@@ -330,11 +325,8 @@ class Ui:
         self._core = core
         self._aio_loop = aio_loop
 
-        self._input = Edit(caption=("prompt", "⟩ "))
         self._videos = ListBox(SimpleFocusListWalker([]))
-        footer = Pile([AttrMap(Divider("─"), "divider"), self._input])
-        self._main = Frame(body=Scrollbar(self._videos), footer=footer)
-        self._root = WidgetPlaceholder(self._main)
+        self._root = WidgetPlaceholder(Scrollbar(self._videos))
 
         self._loop = MainLoop(widget=self._root,
                               palette=self.palette,
@@ -359,9 +351,6 @@ class Ui:
                 self._handle_urls(pyperclip.paste())
             except pyperclip.PyperclipException:
                 pass
-        elif key == "enter" and self._input.edit_text:
-            self._handle_urls(self._input.edit_text)
-            self._input.edit_text = ""
         elif key == "p":
             self._core.start_playlist()
         elif key == "P":
