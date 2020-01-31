@@ -10,7 +10,7 @@ import urwid
 from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, Edit,
                    ExitMainLoop, Filler, Frame, LineBox, ListBox, MainLoop,
                    Overlay, Padding, Pile, SimpleFocusListWalker, Text,
-                   WidgetPlaceholder, WidgetWrap)
+                   WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
 
 log = logging.getLogger(__name__)
@@ -131,7 +131,58 @@ class VideoWidget(WidgetWrap):
         return self._root.render(size, focus)
 
 
+class Scrollbar(WidgetDecoration, WidgetWrap):
+    """Wrap a ListBox to make it scrollable. This is a box widget."""
+
+    _sizing = frozenset(["box"])
+
+    def __init__(self, list_box: ListBox):
+        self._list_box = list_box
+        self._bar = Text("")
+        root = Columns([list_box, (1, Filler(self._bar))])
+        WidgetDecoration.__init__(self, list_box)
+        WidgetWrap.__init__(self, root)
+
+    def render(self, size, focus=False):
+        self._render_scrollbar(size, focus)
+        return WidgetWrap.render(self, size, focus)
+
+    def _render_scrollbar(self, size, focus):
+        maxcol, maxrow = size
+        size = maxcol - 1, maxrow
+
+        # necessary side effect: calculate correct focus offset/inset
+        self._list_box.calculate_visible(size, focus)
+
+        focus_widget, _ = self._list_box.get_focus()
+        focus_offset, focus_inset = self._list_box.get_focus_offset_inset(size)
+        total_height, height_above = 0, 0
+        for w in self._list_box.body:
+            height = w.rows(size=(maxcol,))
+            if w is focus_widget:
+                height_above = total_height - focus_offset + focus_inset
+            total_height += height
+
+        # get integer heights. using special box drawing characters (╽╿│┃)
+        # we get twice the resolution
+        visible = int(2 * maxrow * min(1, maxrow / total_height) + 0.5)
+        above = int(2 * maxrow * height_above / total_height + 0.5)
+        below = 2 * maxrow - above - visible
+
+        top_full, top_half = divmod(above, 2)
+        if top_half: visible -= 1
+        middle_full, middle_half = divmod(visible, 2)
+        if middle_half: below -= 1
+        bottom_full, bottom_half = divmod(below, 2)
+        top = "│" * top_full + "╽" * top_half
+        middle = "┃" * middle_full + "╿" * middle_half
+        bottom = "╿" * bottom_half + "│" * bottom_full
+        self._bar.set_text(top + middle + bottom)
+
+
 class Button(WidgetWrap):
+    """Custom button with a simpler style."""
+
     signals = ["click"]
 
     def __init__(self, caption, callback=None):
@@ -261,7 +312,7 @@ class Ui:
         self._input = Edit(caption=("prompt", "⟩ "))
         self._videos = ListBox(SimpleFocusListWalker([]))
         footer = Pile([AttrMap(Divider("─"), "divider"), self._input])
-        self._main = Frame(body=self._videos, footer=footer)
+        self._main = Frame(body=Scrollbar(self._videos), footer=footer)
         self._root = WidgetPlaceholder(self._main)
 
         self._loop = MainLoop(widget=self._root,
