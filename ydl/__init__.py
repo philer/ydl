@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 from functools import partial, wraps
+from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -107,6 +108,26 @@ class Video:
         title = self._re_unsafe_characters.sub("_", self.title).strip("_")
         return f"{self.extractor}-{self.id}_{title}.{self.ext}"
 
+    def _find_real_file(self, rename=True):
+        """Find a matching file in the file system and rename it appropriately."""
+        pattern = f"{self.extractor}-{self.id}*"
+        expected = Path(self.filename)
+        paths = set{Path(".").glob(pattern)}
+        if not paths:
+            raise RuntimeError(f"Found no files matching '{pattern}'.")
+        try:
+            path, = paths
+        except ValueError:
+            if expected in paths:
+                log.warning("Found multiple paths match '%s'.", pattern)
+                return expected
+            raise RuntimeError(f"Too many files to choose from for '{pattern}'.")
+        if rename:
+            log.info(f"Renaming file '{path}' -> '{expected}'.")
+            path.rename(expected)
+            return expected
+        return path
+
     def sync_to_original(self, original):
         """
         This video has been identified as a duplicate
@@ -159,12 +180,12 @@ class Video:
     async def play(self):
         """Play the video in an external video player."""
         if self.status == "finished":
-            filename = self.filename
+            filename = self._find_real_file()
         elif self.status == "downloading":
             filename = self.filename + ".part"
         else:
             return
-        log.info("Playing %s", self.filename)
+        log.info("Playing %s", filename)
         try:
             process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
                                                            "--fullscreen",
@@ -186,19 +207,21 @@ class Video:
         TODO: Also interrupt any pending or ongoing download and cleanup temporary files.
         """
         if self.status in {"deleted", "error"}:
-            return
+            log.info("Nothing to delete.")
         elif self.status == "duplicate":
             self._original.delete()
-        elif self.status == "pending":
-            ...  # TODO interrupt
-        elif self.status == "downloading":
-            ...  # TODO interrupt
+        elif self.status in {"pending", "downloading"}:
+            # TOOD implement interrupt & delete
+            raise NotImplementedError("Can't delete pending/ongoing downloads (yet).")
         else:
-            log.info(f"Removing file '{self.filename}'.")
-            try:
-                os.remove(self.filename)
-            except OSError as ose:
-                log.warning(ose)
+            pattern = f"{self.extractor}-{self.id}*"
+            paths = tuple{Path(".").glob(pattern)}
+            for path in paths:
+                log.info(f"Removing file '{path}'.")
+                try:
+                    path.remove()
+                except OSError as ose:
+                    log.exception(ose)
             self.status = "deleted"
 
     del original
