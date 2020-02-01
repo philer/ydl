@@ -57,7 +57,7 @@ ydl_settings = {
 }
 
 
-@dataclass
+@dataclass(eq=False)
 class Video:
     """Primary model."""
     url: str

@@ -201,6 +201,43 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         return False
 
 
+class VideoList(Scrollbar):
+
+    def __init__(self, videos=[]):
+        super().__init__(ListBox(SimpleFocusListWalker(videos)))
+
+    def set_videos(self, videos):
+        videos = list(videos)
+        old_videos = self._list_box.body
+        focus = self._list_box.focus_position
+        self._list_box.body = SimpleFocusListWalker(videos)
+
+        focus_candidates = old_videos[focus:] + old_videos[focus - 1::-1]
+        lookup = {vid: idx for idx, vid in enumerate(videos)}
+        for vid in focus_candidates:
+            try:
+                focus = lookup[vid]
+                break
+            except KeyError:
+                pass
+        else:
+            return
+        self._list_box.focus_position = focus
+
+    def remove(self, video):
+        focus = self._list_box.focus_position
+        self._list_box.body.remove(video)
+        try:
+            self._list_box.focus_position = focus
+        except IndexError:
+            self._list_box.focus_position = focus - 1
+
+    def append(self, video):
+        self._list_box.body.append(video)
+        self._list_box.focus_position = len(self._list_box.body) - 1
+
+
+
 class LogHandlerWidget(WidgetWrap, logging.Handler):
     """Show log messages in a scrollable window for live debugging."""
 
@@ -358,10 +395,11 @@ class Ui:
         self._core = core
         self._aio_loop = aio_loop
 
-        self._videos = ListBox(SimpleFocusListWalker([]))
-        self._log_window = Pile([AttrMap(Divider("─"), "divider"), (5, LogHandlerWidget())]), ('pack', None)
-        self._log_window_visible = False
-        self._visible_windows = Pile([Scrollbar(self._videos)])
+        self._show_deleted = False
+
+        self._videos_to_widgets = dict()
+        self._video_list = VideoList()
+        self._visible_windows = Pile([self._video_list])
         self._root = WidgetPlaceholder(self._visible_windows)
 
         self._loop = MainLoop(widget=self._root,
@@ -371,7 +409,8 @@ class Ui:
         self._loop.screen.set_terminal_properties(
             colors=256, bright_is_bold=False, has_underline=True)
 
-        self._show_deleted = True
+        self._log_window = Pile([AttrMap(Divider("─"), "divider"), (5, LogHandlerWidget())]), ('pack', None)
+        self._log_window_visible = False
 
     def run_loop(self):
         self._loop.run()
@@ -396,9 +435,7 @@ class Ui:
         elif key == "R":
             self._core.stop_random_playlist()
         elif key == "h":
-            self._show_deleted = not self._show_deleted
-            for v in self._videos.body:
-                v._invalidate()
+            self.toggle_show_deleted()
         elif key == "l":
             self.toggle_log_window()
 
@@ -410,9 +447,24 @@ class Ui:
 
     def add_video(self, video):
         """Wrap a new video and add it to the display."""
-        widget = VideoWidget(self, video)
-        self._videos.body.append(widget)
-        self._videos.focus_position = len(self._videos.body) - 1
+        vw = VideoWidget(self, video)
+        self._videos_to_widgets[video] = vw
+        if self._show_deleted or video.status != "deleted":
+            self._video_list.append(vw)
+        video.observers.append(self._video_updated)
+
+    def _video_updated(self, video, attribute, value):
+        if value == "deleted" and attribute == "status" and not self._show_deleted:
+            self._video_list.remove(self._videos_to_widgets[video])
+
+    def toggle_show_deleted(self):
+        self._show_deleted = not self._show_deleted
+        if self._show_deleted:
+            show = self._videos_to_widgets.values()
+        else:
+            show = [vw for v, vw in self._videos_to_widgets.items()
+                       if v.status != "deleted"]
+        self._video_list.set_videos(show)
 
     def toggle_log_window(self):
         self._log_window_visible = not self._log_window_visible
