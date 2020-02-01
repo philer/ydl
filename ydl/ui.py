@@ -72,7 +72,7 @@ class VideoWidget(WidgetWrap):
     def update_status_icon(self):
         status = self._video.status
         style = status + "_icon" if status in {"finished", "deleted"} else status
-        if status == "downloading" and self._video.progress:
+        if status == "downloading" and 0 < self._video.progress < 1:
             icon = f"{self._video.progress: >3.0%}"
         else:
             icon = self.status_icon[status]
@@ -104,25 +104,19 @@ class VideoWidget(WidgetWrap):
         else:
             return key
 
-    def rows(self, size, focus=False):
-        if self._video.status == "deleted" and not self._ui._show_deleted:
-            return 0
-        return super().rows(size, focus)
-
     def render(self, size, focus=False):
         """Update appearance based on video status, widget focus and size."""
-        if self._video.status == "deleted" and not self._ui._show_deleted:
-            return Pile([]).render(size)
+        width = size[0]
         status = self._video.status
         focused = "_focus" if focus else ""
-        info = self._info.ljust(size[0])
         if status == "downloading":
-            filled_width = int(size[0] * self._video.progress)
+            info = f"{self._info:<{size}.{size}}"
+            filled_width = int(width * self._video.progress)
             filled, empty = info[:filled_width], info[filled_width:]
             info_text = [("downloading_filled" + focused, filled),
                          ("downloading" + focused, empty)]
         else:
-            info_text = (status + focused, info)
+            info_text = (status + focused, self._info)
         self._info_widget.set_text(info_text)
         return self._root.render(size, focus)
 
@@ -195,6 +189,7 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         if 4 <= button <= 5:  # scrollwheel
             try:
                 self._list_box.focus_position += 1 if button == 5 else -1
+                self._invalidate()
             except IndexError:
                 pass
             return True

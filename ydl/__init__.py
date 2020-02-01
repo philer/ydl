@@ -112,7 +112,7 @@ class Video:
         """Find a matching file in the file system and rename it appropriately."""
         pattern = f"{self.extractor}-{self.id}*"
         expected = Path(self.filename)
-        paths = set{Path(".").glob(pattern)}
+        paths = set(Path(".").glob(pattern))
         if not paths:
             raise RuntimeError(f"Found no files matching '{pattern}'.")
         try:
@@ -122,6 +122,8 @@ class Video:
                 log.warning("Found multiple paths match '%s'.", pattern)
                 return expected
             raise RuntimeError(f"Too many files to choose from for '{pattern}'.")
+        if path == expected:
+            return expected
         if rename:
             log.info(f"Renaming file '{path}' -> '{expected}'.")
             path.rename(expected)
@@ -215,7 +217,7 @@ class Video:
             raise NotImplementedError("Can't delete pending/ongoing downloads (yet).")
         else:
             pattern = f"{self.extractor}-{self.id}*"
-            paths = tuple{Path(".").glob(pattern)}
+            paths = tuple(Path(".").glob(pattern))
             for path in paths:
                 log.info(f"Removing file '{path}'.")
                 try:
