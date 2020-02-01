@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 class VideoWidget(WidgetWrap):
     """Ugly mix of data model and view widget"""
 
-    palette = (
+    palette = [
         ("pending",            "light gray",  "", "", "g70",  ""),
         ("duplicate",          "yellow",      "", "", "#da0", ""),
         ("downloading",        "light blue",  "", "", "#6dd", ""),
@@ -28,9 +28,12 @@ class VideoWidget(WidgetWrap):
         ("error",              "light red",   "", "", "#d66", ""),
         ("deleted",            "dark gray,strikethrough", "", "", "#666,strikethrough", ""),
         ("deleted_icon",       "dark gray",   "", "", "#666", ""),
-    )
-    palette += tuple((p[0] + "_focus", p[1] + ",bold", *p[2:4], p[4] + ",bold", p[5])
-                     for p in palette if not p[0].endswith("_icon"))
+    ]
+    for style in palette:
+        name, fg, bg, mono, fg256, bg256 = style
+        if not name.endswith("_icon"):
+            palette.append((name + "_focus", fg + ",bold", bg, mono,
+                            fg256 + ",bold", bg256 or "g19"))
 
     status_icon = {
         "pending": " ⧗ ",
