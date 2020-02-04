@@ -29,11 +29,14 @@ class VideoWidget(WidgetWrap):
         ("deleted",            "dark gray,strikethrough", "", "", "#666,strikethrough", ""),
         ("deleted_icon",       "dark gray",   "", "", "#666", ""),
     ]
+    focus_palette = []
     for style in palette:
         name, fg, bg, mono, fg256, bg256 = style
         if not name.endswith("_icon"):
-            palette.append((name + "_focus", fg + ",bold", bg, mono,
+            focus_palette.append((name + "_focus", fg + ",bold", bg, mono,
                             fg256 + ",bold", bg256 or "g19"))
+    palette += focus_palette
+    del focus_palette
 
     status_icon = {
         "pending": " ⧗ ",
@@ -113,7 +116,7 @@ class VideoWidget(WidgetWrap):
         status = self._video.status
         focused = "_focus" if focus else ""
         if status == "downloading":
-            info = f"{self._info:<{size}.{size}}"
+            info = f"{self._info:<{width}.{width}}"
             filled_width = int(width * self._video.progress)
             filled, empty = info[:filled_width], info[filled_width:]
             info_text = [("downloading_filled" + focused, filled),
