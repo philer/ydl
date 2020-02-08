@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from functools import partial, wraps
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import cast, Any, Callable, Iterable, Iterator, List, Optional, TypeVar
 from urllib.parse import urlparse
 
-import youtube_dl
+import youtube_dl  # type: ignore
 import requests
 
 from .ui import Ui
@@ -57,6 +57,7 @@ ydl_settings = {
     # "outtmpl": "/tmp/ydl/" + youtube_dl.DEFAULT_OUTTMPL,
 }
 
+F = TypeVar('F', bound=Callable[..., Any])
 
 @dataclass(eq=False)
 class Video:
@@ -64,18 +65,21 @@ class Video:
     url: str
     status: str = "pending"
     progress: int = 0
-    finished: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+    finished: asyncio.Future = field(init=False, repr=False, compare=False,
+                                     default_factory=lambda: asyncio.get_event_loop().create_future())
 
     _meta_properties = "extractor", "id", "title", "ext"
-    extractor: str = None
-    id: str = None
+    extractor: str = ""
+    id: str = ""
     title: str = "(no title)"
-    ext: str = None
+    ext: str = ""
 
-    _original: Video = None
-    observers: List[callable] = field(default_factory=list)
+    _original: Optional[Video] = field(init=False, repr=False, compare=False,
+                                       default=None)
+    observers: List[Callable] = field(init=False, repr=False, compare=False,
+                                      default_factory=list)
 
-    def original(method):
+    def original(method: F) -> F:  # type: ignore
         """Method decorator to only call state mutating methods
         of duplicates on original."""
         @wraps(method)
@@ -83,7 +87,7 @@ class Video:
             if self._original:
                 return method(self._original, *args, **kwargs)
             return method(self, *args, **kwargs)
-        return wrapped
+        return cast(F, wrapped)
 
     @original
     def __setattr__(self, name, value):
@@ -103,7 +107,7 @@ class Video:
 
     @property
     def filename(self):
-        if None in (self.extractor, self.id, self.title, self.ext):
+        if not all((self.extractor, self.id, self.ext)):
             raise AttributeError(f"Can't generate filename for {self}.")
         title = self._re_unsafe_characters.sub("_", self.title).strip("_")
         return f"{self.extractor}-{self.id}_{title}.{self.ext}"
@@ -130,7 +134,7 @@ class Video:
             return expected
         return path
 
-    def sync_to_original(self, original):
+    def sync_to_original(self, original: Video):
         """
         This video has been identified as a duplicate
         and should have its meta info mirror that of the original.
@@ -141,7 +145,7 @@ class Video:
         original.observers.append(self._handle_update)
         self._original = original
 
-    def _handle_update(self, original, prop, value):
+    def _handle_update(self, original: Video, prop: str, value: Any):
         """Update a meta property mirrored from another instance."""
         if prop in self._meta_properties:
             setattr(self, prop, value)
@@ -219,9 +223,9 @@ class Video:
             pattern = f"{self.extractor}-{self.id}*"
             paths = tuple(Path(".").glob(pattern))
             for path in paths:
-                log.info(f"Removing file '{path}'.")
+                log.info(f"Removing file '{path}'")
                 try:
-                    path.remove()
+                    path.unlink()
                 except OSError as ose:
                     log.exception(ose)
             self.status = "deleted"
@@ -247,11 +251,10 @@ class Archive:
             with open(self._filename, "rt") as archive:
                 for lineno, line in enumerate(map(str.rstrip, archive)):
                     if line:
-                        parts = line.split(None, len(self._video_properties) - 1)
-                        if len(parts) in {2, 5, 6}:
-                            yield Video(**dict(zip(self._video_properties, parts)))
-                        else:
+                        parts: List[Any] = line.split(None, len(self._video_properties) - 1)
+                        if len(parts) not in {2, 5, 6}:
                             raise ValueError(f"Invalid archive state on line {lineno}: '{line}'")
+                        yield Video(**dict(zip(self._video_properties, parts)))
         except FileNotFoundError:
             pass
 
@@ -391,7 +394,7 @@ class DownloadManager:
             ydl.download([video.url])
         except youtube_dl.utils.DownloadError:
             video.status = "error"
-        except self.Interrupt:
+        except Interrupt:
             pass
 
 

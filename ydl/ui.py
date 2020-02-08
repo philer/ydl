@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import sys
 
-import pyperclip
-import urwid
+import pyperclip  # type: ignore
+import urwid  # type: ignore
 from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
                    Filler, LineBox, ListBox, MainLoop, Overlay, Padding, Pile,
                    SimpleFocusListWalker, Text,
                    WidgetDecoration, WidgetPlaceholder, WidgetWrap)
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from . import Video
 
 
 log = logging.getLogger(__name__)
@@ -49,12 +55,12 @@ class VideoWidget(WidgetWrap):
     }
 
     @property
-    def _info(self):
+    def _info(self) -> str:
         if self._video.id is not None and self._video.title is not None:
             return f"{self._video.extractor}:{self._video.id} - {self._video.title}"
         return self._video.url
 
-    def __init__(self, ui, video):
+    def __init__(self, ui, video: Video):
         self._ui = ui
         self._video = video
 
