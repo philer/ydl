@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from contextlib import suppress
 
 import pyperclip  # type: ignore
 import urwid  # type: ignore
@@ -199,11 +200,9 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         if self._list_box.mouse_event(size, event, button, col, row, focus):
             return True
         if 4 <= button <= 5:  # scrollwheel
-            try:
+            with suppress(IndexError):
                 self._list_box.focus_position += 1 if button == 5 else -1
                 self._invalidate()
-            except IndexError:
-                pass
             return True
         return False
 
@@ -222,14 +221,9 @@ class VideoList(Scrollbar):
         focus_candidates = old_videos[focus:] + old_videos[focus - 1::-1]
         lookup = {vid: idx for idx, vid in enumerate(videos)}
         for vid in focus_candidates:
-            try:
-                focus = lookup[vid]
+            with suppress(KeyError):
+                self._list_box.focus_position = lookup[vid]
                 break
-            except KeyError:
-                pass
-        else:
-            return
-        self._list_box.focus_position = focus
 
     def remove(self, video):
         focus = self._list_box.focus_position
@@ -429,10 +423,8 @@ class Ui:
         if key == "esc" or key == "q":
             self._core.shutdown()
         elif key == "ctrl v":
-            try:
+            with suppress(pyperclip.PyperclipException):
                 self._handle_urls(pyperclip.paste())
-            except pyperclip.PyperclipException:
-                pass
         elif key == "p":
             self._core.start_playlist()
         elif key == "P":

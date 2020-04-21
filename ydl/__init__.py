@@ -12,6 +12,7 @@ import signal
 import subprocess
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
 from functools import partial, wraps
@@ -93,11 +94,9 @@ class Video:
     def __setattr__(self, name, value):
         """A simplistic observer pattern."""
         super().__setattr__(name, value)
-        try:
+        with suppress(AttributeError):  # missing self.observers during __init__
             for observer in self.observers:
                 observer(self, name, value)
-        except AttributeError:  # missing self.observers during __init__
-            pass
 
     @property
     def hostname(self):
