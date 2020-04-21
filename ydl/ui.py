@@ -41,7 +41,7 @@ class VideoWidget(WidgetWrap):
         name, fg, bg, mono, fg256, bg256 = style
         if not name.endswith("_icon"):
             focus_palette.append((name + "_focus", fg + ",bold", bg, mono,
-                            fg256 + ",bold", bg256 or "g19"))
+                                  fg256 + ",bold", bg256 or "g19"))
     palette += focus_palette
     del focus_palette
 
@@ -97,7 +97,7 @@ class VideoWidget(WidgetWrap):
 
     async def _re_download(self):
         if (self._video.status in {"deleted", "error"}
-            and await self._ui.confirm("Download this video again?")):
+                and await self._ui.confirm("Download this video again?")):
             self._video.status = "pending"
 
             # TODO This feels wrong.
@@ -177,9 +177,11 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         below = 2 * maxrow - above - visible
 
         top_full, top_half = divmod(above, 2)
-        if top_half: visible -= 1
+        if top_half:
+            visible -= 1
         middle_full, middle_half = divmod(visible, 2)
-        if middle_half: below -= 1
+        if middle_half:
+            below -= 1
         bottom_full, bottom_half = divmod(below, 2)
         top = "│" * top_full + "╽" * top_half
         middle = "┃" * middle_full + "╿" * middle_half
@@ -236,7 +238,6 @@ class VideoList(Scrollbar):
     def append(self, video):
         self._list_box.body.append(video)
         self._list_box.focus_position = len(self._list_box.body) - 1
-
 
 
 class LogHandlerWidget(WidgetWrap, logging.Handler):
@@ -300,6 +301,7 @@ class Dialog(WidgetWrap):
     Dialog Wídget that can be attached to an existing WidgetPlaceholder.
     As a (experimental) subclass of asyncio.Future the result can be awaited.
     """
+
     def __init__(self, content, *, parent=None, buttons=("cancel", "continue")):
         self._parent = parent
         self._future = asyncio.get_event_loop().create_future()
@@ -367,6 +369,7 @@ class CustomEventLoop(AsyncioEventLoop):
     Urwid's AsyncioEventLoop's exception handling is broken.
     This code is from https://github.com/urwid/urwid/issues/235#issuecomment-458483802
     """
+
     def _exception_handler(self, loop, context):
         try:
             exc = context["exception"]
@@ -462,7 +465,7 @@ class Ui:
             show = self._videos_to_widgets.values()
         else:
             show = [vw for v, vw in self._videos_to_widgets.items()
-                       if v.status != "deleted"]
+                    if v.status != "deleted"]
         self._video_list.set_videos(show)
 
     def toggle_log_window(self):

@@ -404,7 +404,7 @@ class YDL:
         self._aio_loop = asyncio.get_event_loop()
         self.ui = Ui(self, self._aio_loop)
 
-        self.downloads = DownloadManager(aio_loop = self._aio_loop)
+        self.downloads = DownloadManager(aio_loop=self._aio_loop)
 
         self.videos = dict()
         if archive:
