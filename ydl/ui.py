@@ -15,6 +15,8 @@ from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
                    SimpleFocusListWalker, Text,
                    WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
+from .util import noawait
+
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from . import Video
@@ -109,11 +111,11 @@ class VideoWidget(WidgetWrap):
     def keypress(self, _size, key):
         if key == "enter" or key == "right" or key == " ":
             if self._video.status in ("error", "deleted"):
-                self._ui._aio_loop.create_task(self._re_download())
+                noawait(self._re_download())
             else:
-                self._ui._aio_loop.create_task(self._video.play())
+                noawait(self._video.play())
         elif key == "d" or key == "delete":
-            self._ui._aio_loop.create_task(self._delete())
+            noawait(self._delete())
         else:
             return key
 
@@ -445,7 +447,7 @@ class Ui:
         """Extract valid urls from user input and pass them on."""
         for url in text.split():
             if url:
-                self._aio_loop.create_task(self._core.add_video(url))
+                noawait(self._core.add_video(url))
 
     def add_video(self, video):
         """Wrap a new video and add it to the display."""
