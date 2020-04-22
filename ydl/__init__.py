@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from functools import partial, wraps
 from pathlib import Path
-from typing import cast, Any, Callable, Iterable, Iterator, List, Optional, TypeVar
+from typing import (cast, Any, Callable, Dict, Iterable, Iterator, List,
+                    Optional, Sequence, TypeVar)
 from urllib.parse import urlparse
 
 import youtube_dl  # type: ignore
@@ -364,6 +365,67 @@ class DownloadManager:
             pass
 
 
+class Playlist:
+
+    delay = 0
+
+    def __init__(self, videos):
+        self.videos = videos
+        self._iter = iter(videos)
+        self._current = None
+        self._task = None
+
+    @property
+    def current(self):
+        return self._current
+
+    def start(self):
+        if self._task is None:
+            log.debug("Starting playlist")
+            self._task = noawait(self._run())
+
+    def stop(self):
+        if self._task:
+            log.debug("Stopping playlist")
+            self._task.cancel()
+            self._task = None
+            self._current = None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return next(self._iter)
+
+    async def _run(self):
+        try:
+            async for self._current in self:
+                await self._current.play()
+                await asyncio.sleep(self.delay)
+        except Exception as e:
+            log.exception(e)
+
+class RandomPlaylist(Playlist):
+    def __init__(self, videos: Sequence[Video]):
+        super().__init__([])
+        self._source = videos
+
+    async def __anext__(self):
+        video = random.choice(self._source)
+        self.videos.append(video)
+        return video
+
+class QueuePlaylist(Playlist):
+    def __init__(self, videos: asyncio.Queue[Video]):
+        super().__init__([])
+        self._queue = videos
+
+    async def __anext__(self):
+        video = await self._queue.get()
+        self.videos.append(video)
+        return video
+
+
 class YDL:
     """Core controller"""
 
@@ -374,18 +436,19 @@ class YDL:
 
         self.downloads = DownloadManager(aio_loop=self._aio_loop)
 
-        self.videos = dict()
+        self.videos: List[Video] = []
+        self.videos_by_url: Dict[str, Video] = dict()
         if archive:
             for video in archive:
-                self.videos[video.url] = video
+                self.videos.append(video)
+                self.videos_by_url[video.url] = video
                 self.ui.add_video(video)
                 if video.status in {"pending", "downloading"}:
                     noawait(self._handle_new_video(video))
 
-        self.playlist = asyncio.Queue()
-        self._playlist_task = self._random_playlist_task = None
-        if play:
-            self.start_playlist()
+        self._session_added: asyncio.Queue[Video] = asyncio.Queue()
+
+        self._playlists: List[Playlist] = []
 
     def run(self):
         self._aio_loop.add_signal_handler(signal.SIGINT, self.shutdown)
@@ -393,9 +456,11 @@ class YDL:
         self.ui.run_loop()
         log.debug("Waiting for pending tasks to finish…")
         self.downloads.shutdown()
+        while self._playlists:
+            self.pop_playlist()
         self._aio_loop.run_until_complete(self._cleanup_tasks())
         self._aio_loop.close()
-        self.archive.update(self.videos.values())
+        self.archive.update(self.videos)
         log.debug("Bye.")
 
     def shutdown(self):
@@ -414,14 +479,15 @@ class YDL:
         """Manage a video's progression through life."""
         video = Video(url)
         self.ui.add_video(video)
-        if url in self.videos:
+        if url in self.videos_by_url:
             log.info("Duplicate detected.")
-            original = self.videos[url]
+            original = self.videos_by_url[url]
             video.sync_to_original(original)
             await original.finished
-            await self.playlist.put(video)
+            await self._session_added.put(video)
         else:
-            self.videos[url] = video
+            self.videos.append(video)
+            self.videos_by_url[url] = video
             await self._handle_new_video(video)
 
     async def _handle_new_video(self, video):
@@ -435,38 +501,29 @@ class YDL:
             log.info("Starting download from %s", video.url)
             await self.downloads.download(video)
             log.info("Finished download from %s", video.url)
-            await self.playlist.put(video)
+            await self._session_added.put(video)
 
     def start_playlist(self):
-        if self._playlist_task is None:
-            log.debug("Starting queue playback")
-            self._playlist_task = self._aio_loop.create_task(self._run_playlist())
+        self.add_playlist(QueuePlaylist(self._session_added))
 
     def stop_playlist(self):
-        if self._playlist_task:
-            log.debug("Stopping queue playback")
-            self._playlist_task.cancel()
-            self._playlist_task = None
-
-    async def _run_playlist(self):
-        while True:
-            await (await self.playlist.get()).play()
-            self.playlist.task_done()
-            await asyncio.sleep(VIDEO_DELAY)
+        self.pop_playlist()  # TODO
 
     def start_random_playlist(self):
-        if self._random_playlist_task is None:
-            log.debug("Starting random playback")
-            self._random_playlist_task = self._aio_loop.create_task(self._run_random_playlist())
+        self.add_playlist(RandomPlaylist(self.videos))
 
     def stop_random_playlist(self):
-        if self._random_playlist_task:
-            log.debug("Stopping random playback")
-            self._random_playlist_task.cancel()
-            self._random_playlist_task = None
+        self.pop_playlist()  # TODO
 
-    async def _run_random_playlist(self):
-        """Continuously play random videos."""
-        while True:
-            await random.choice(tuple(self.videos.values())).play()
-            await asyncio.sleep(VIDEO_DELAY)
+    def add_playlist(self, playlist: Playlist):
+        self._playlists.append(playlist)
+        playlist.start()
+
+    # TODO removal by ID
+    def pop_playlist(self):
+        try:
+            playlist = self._playlists.pop()
+        except IndexError:
+            pass
+        else:
+            playlist.stop()
