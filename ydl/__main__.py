@@ -18,7 +18,7 @@ Options:
 import io
 import logging
 
-from docopt import docopt
+from docopt import docopt  # type: ignore
 
 from . import __version__, Archive, YDL
 
@@ -46,6 +46,7 @@ def main():
         ydl.run()
     finally:
         print(log_stream.getvalue(), end="")
+
 
 if __name__ == "__main__":
     main()

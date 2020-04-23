@@ -3,8 +3,6 @@ from functools import partial
 from typing import (cast, Any, Callable, Dict, Iterable, Iterator, List,
                     Optional, Sequence, TypeVar)
 
-T = TypeVar('T')
-
 noawait = asyncio.create_task
 
 

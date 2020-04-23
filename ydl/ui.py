@@ -7,17 +7,18 @@ import asyncio
 import logging
 import sys
 from contextlib import suppress
+from functools import partial
+from typing import TYPE_CHECKING, Any, Callable, List, Tuple, Union
 
 import pyperclip  # type: ignore
 import urwid  # type: ignore
 from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
-                   Filler, LineBox, ListBox, MainLoop, Overlay, Padding, Pile,
-                   SimpleFocusListWalker, Text,
-                   WidgetDecoration, WidgetPlaceholder, WidgetWrap)
+                   Filler, Frame, LineBox, ListBox, MainLoop, Overlay, Padding,
+                   Pile, SimpleFocusListWalker, Text,
+                   Widget, WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
 from .util import noawait
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from . import Video
 
@@ -272,28 +273,31 @@ class LogHandlerWidget(WidgetWrap, logging.Handler):
 class Button(WidgetWrap):
     """Custom button with a simpler style."""
 
-    signals = ["click"]
+    palette = (
+        ("button", "bold", ""),
+        ("button_focus", "bold,standout", ""),
+    )
 
-    def __init__(self, caption, callback=None):
-        root = AttrMap(Text(f"[{caption}]"), "button", "button_focus")
+    def __init__(self, caption: str, *, onClick: Callable[[], None]=None,
+                 style="button", focus_style="button_focus"):
+        self._onClick = onClick
+        root = AttrMap(Text(caption), style, focus_style)
         super().__init__(root)
-        if callback:
-            urwid.connect_signal(self, "click", callback)
 
     def selectable(self):
         return True
 
     def keypress(self, _size, key):
         """Send "click" signal on 'activate' command."""
-        if self._command_map[key] == urwid.ACTIVATE:
-            self._emit("click")
+        if self._onClick and self._command_map[key] == urwid.ACTIVATE:
+            self._onClick()
         else:
             return key
 
     def mouse_event(self, _size, event, button, *_):
         """Send "click" signal on button 1 press."""
-        if button == 1 and urwid.util.is_mouse_press(event):
-            self._emit("click")
+        if self._onClick and button == 1 and urwid.util.is_mouse_press(event):
+            self._onClick()
             return True
         return False
 
@@ -304,7 +308,8 @@ class Dialog(WidgetWrap):
     As a (experimental) subclass of asyncio.Future the result can be awaited.
     """
 
-    def __init__(self, content, *, parent=None, buttons=("cancel", "continue")):
+    def __init__(self, content: Union[str, Button], *, parent: WidgetPlaceholder=None,
+                 buttons=("cancel", "continue")):
         self._parent = parent
         self._future = asyncio.get_event_loop().create_future()
         if isinstance(content, str):
@@ -312,17 +317,23 @@ class Dialog(WidgetWrap):
         elif not isinstance(content, urwid.Widget):
             raise TypeError("Content of Dialog widget must be instance of Widget or str.")
         if buttons:
-            row = [Divider()]
-            for button in buttons:
-                if isinstance(button, str):
-                    button, name = Button(button.capitalize()), button
-                    urwid.connect_signal(button, "click", self.close, user_args=[name])
-                row.append(('pack', button))
-            row.append(Divider())
-            row = Columns(row, dividechars=3)
-            row.focus_position = len(buttons)
-            row = Padding(row, align="center", width="pack")
-            content = Pile([content, Divider(top=1), row])
+            btns = [
+                button if isinstance(button, Button) else
+                Button(f"[{button.capitalize()}]",
+                       onClick=partial(self.close, button))
+                for button in buttons
+            ]
+            columns = Columns([
+                Divider(),
+                *[('pack', btn) for btn in btns],
+                Divider(),
+            ])
+            columns.focus_position = len(buttons)
+            content = Pile([
+                content,
+                Divider(top=1),
+                Padding(columns, align="center", width="pack"),
+            ])
         self._root = LineBox(Filler(content))
         super().__init__(self._root)
         if parent:
@@ -337,8 +348,7 @@ class Dialog(WidgetWrap):
     def __await__(self):
         return self._future.__await__()
 
-    def show(self, parent):
-        assert isinstance(parent, WidgetPlaceholder)
+    def show(self, parent: WidgetPlaceholder):
         self._parent = parent
         widget = Overlay(self,
                          parent.original_widget,
@@ -348,7 +358,7 @@ class Dialog(WidgetWrap):
         parent.original_widget = widget
         parent._invalidate()
 
-    def close(self, result=None, *_):
+    def close(self, result: Any=None, *_):
         if self._parent:
             self._parent.original_widget = self._parent.original_widget.contents[0][0]
         if result == "cancel":
@@ -391,10 +401,9 @@ class Ui:
         # (name, foreground, background, mono, foreground_high, background_high)
         *VideoWidget.palette,
         *LogHandlerWidget.palette,
-        ("divider",         "dark gray",   "", "", "#666", ""),
-        ("divider_focus",   "light gray",  "", "", "#aaa", ""),
-        ("button",          "bold",        ""),
-        ("button_focus",    "bold,standout",""),
+        *Button.palette,
+        ("divider", "dark gray",  "", "", "#666", ""),
+        ("divider_focus", "light gray", "", "", "#aaa", ""),
     )
 
     def __init__(self, core, aio_loop):
