@@ -302,6 +302,63 @@ class Button(WidgetWrap):
         return False
 
 
+class TabMenu(WidgetWrap):
+
+    palette = (
+        ("tab", "", ""),
+        ("tab_active", "bold,underline",""),
+    )
+
+    def __init__(self, tabs: List[Tuple[str, Widget]]):
+        self._labels, self._bodies = zip(*tabs)
+        self._buttons = [
+            AttrMap(Button(label, onClick=partial(self.select, index), style=None), "tab")
+            for index, label in enumerate(self._labels)
+        ]
+        if self._buttons:
+            self._buttons[0].set_attr_map({None: "tab_active"})
+        self._menu = Columns(
+            [('pack', button) for button in self._buttons],
+            dividechars=1
+        )
+        self._root = Frame(
+            header=Pile([self._menu, AttrMap(Divider("─"), "divider")]),
+            body=self._bodies[0] if len(tabs) else None
+        )
+        super().__init__(self._root)
+
+    def select(self, index: int):
+        try:
+            current = self._menu.focus_position
+            self._menu.focus_position = index
+            self._buttons[current].set_attr_map({None: "tab"})
+            self._buttons[index].set_attr_map({None: "tab_active"})
+            self._root.body = self._bodies[index]
+            self._root.focus_position = 'body'
+        except IndexError:
+            pass
+
+    def _cycle(self, by: int):
+        total = len(self._labels)
+        current = self._menu.focus_position
+        self.select((current + by + total) % total)
+
+    def keypress(self, size, key):
+        log.info(key)
+        if key == "ctrl left" or key == "ctrl shift tab":
+            self._cycle(-1)
+        elif key == "ctrl right" or key == "ctrl tab":
+            self._cycle(1)
+        else:
+            try:
+                meta, n = key.split()
+                if meta == "meta":
+                    self.select(int(n) - 1)
+                    return
+            except ValueError:
+                pass
+            return self._root.keypress(size, key)
+
 class Dialog(WidgetWrap):
     """
     Dialog Wídget that can be attached to an existing WidgetPlaceholder.
@@ -402,6 +459,7 @@ class Ui:
         *VideoWidget.palette,
         *LogHandlerWidget.palette,
         *Button.palette,
+        *TabMenu.palette,
         ("divider", "dark gray",  "", "", "#666", ""),
         ("divider_focus", "light gray", "", "", "#aaa", ""),
     )
