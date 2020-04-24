@@ -351,7 +351,6 @@ class TabMenu(WidgetWrap):
         self.select((current + by + total) % total)
 
     def keypress(self, size, key):
-        log.info(key)
         if key == "ctrl left" or key == "ctrl shift tab":
             self._cycle(-1)
         elif key == "ctrl right" or key == "ctrl tab":
