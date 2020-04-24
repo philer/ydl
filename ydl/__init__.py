@@ -81,6 +81,7 @@ class Video:
                                        default=None)
     observers: List[Callable] = field(init=False, repr=False, compare=False,
                                       default_factory=list)
+    playing: int = field(init=False, repr=False, compare=False, default=0)
 
     def original(method: F) -> F:  # type: ignore
         """Method decorator to only call state mutating methods
@@ -193,6 +194,7 @@ class Video:
         else:
             return
         log.info("Playing %s", filename)
+        self.playing += 1
         try:
             process = await asyncio.create_subprocess_exec(VIDEO_PLAYER,
                                                            "--fullscreen",
@@ -206,6 +208,8 @@ class Video:
             raise
         except Exception as e:
             log.exception(e)
+        finally:
+            self.playing -= 1
 
     @original
     def delete(self):

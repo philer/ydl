@@ -22,13 +22,22 @@ from .util import noawait
 if TYPE_CHECKING:
     from . import Video
 
+Palette = Tuple[Union[
+    # (name, copy_from)
+    Tuple[str, str],
+    # (name, foreground, background)
+    Tuple[str, str, str],
+    # (name, foreground, background, mono, foreground_high, background_high)
+    Tuple[str, str, str, str, str, str]
+],...]
+
 
 log = logging.getLogger(__name__)
 
 class VideoWidget(WidgetWrap):
     """Ugly mix of data model and view widget"""
 
-    palette = [
+    palette: Tuple[Tuple[str, str, str, str, str, str], ...] = (
         ("pending",            "light gray",  "", "", "g70",  ""),
         ("duplicate",          "yellow",      "", "", "#da0", ""),
         ("downloading",        "light blue",  "", "", "#6dd", ""),
@@ -38,15 +47,11 @@ class VideoWidget(WidgetWrap):
         ("error",              "light red",   "", "", "#d66", ""),
         ("deleted",            "dark gray,strikethrough", "", "", "#666,strikethrough", ""),
         ("deleted_icon",       "dark gray",   "", "", "#666", ""),
-    ]
-    focus_palette = []
-    for style in palette:
-        name, fg, bg, mono, fg256, bg256 = style
-        if not name.endswith("_icon"):
-            focus_palette.append((name + "_focus", fg + ",bold", bg, mono,
-                                  fg256 + ",bold", bg256 or "g19"))
-    palette += focus_palette
-    del focus_palette
+    )
+    palette += tuple(
+        (name + "_focus", fg + ",bold", bg, mono, fg256 + ",bold", bg256 or "g19")
+        for name, fg, bg, mono, fg256, bg256 in palette if not name.endswith("_icon")
+    )
 
     status_icon = {
         "pending": " ⧗ ",
@@ -55,7 +60,7 @@ class VideoWidget(WidgetWrap):
         "finished": " ✔ ",
         "error": " ⨯ ",
         "deleted": " ⨯ ",
-        # ▶ ♻
+        "playing": " ▶ ",
     }
 
     @property
@@ -81,7 +86,7 @@ class VideoWidget(WidgetWrap):
         video.observers.append(self._handle_update)
 
     def _handle_update(self, _video, prop, _value):
-        if prop in {"status", "progress"}:
+        if prop in {"status", "progress", "playing"}:
             self.update_status_icon()
         self._invalidate()
 
@@ -90,6 +95,8 @@ class VideoWidget(WidgetWrap):
         style = status + "_icon" if status in {"finished", "deleted"} else status
         if status == "downloading" and 0 < self._video.progress < 1:
             icon = f"{self._video.progress: >3.0%}"
+        elif self._video.playing:
+            icon = self.status_icon["playing"]
         else:
             icon = self.status_icon[status]
         self._status_widget.set_text((style, icon))
@@ -246,7 +253,7 @@ class VideoList(Scrollbar):
 class LogHandlerWidget(WidgetWrap, logging.Handler):
     """Show log messages in a scrollable window for live debugging."""
 
-    palette = (
+    palette: Palette = (
         ("log_DEBUG", "",  ""),
         ("log_INFO", "light blue",  ""),
         ("log_WARNING", "yellow", ""),
@@ -273,7 +280,7 @@ class LogHandlerWidget(WidgetWrap, logging.Handler):
 class Button(WidgetWrap):
     """Custom button with a simpler style."""
 
-    palette = (
+    palette: Palette = (
         ("button", "bold", ""),
         ("button_focus", "bold,standout", ""),
     )
@@ -304,7 +311,7 @@ class Button(WidgetWrap):
 
 class TabMenu(WidgetWrap):
 
-    palette = (
+    palette: Palette = (
         ("tab", "", ""),
         ("tab_active", "bold,underline",""),
     )
@@ -454,8 +461,7 @@ class CustomEventLoop(AsyncioEventLoop):
 
 
 class Ui:
-    palette = (
-        # (name, foreground, background, mono, foreground_high, background_high)
+    palette: Palette = (
         *VideoWidget.palette,
         *LogHandlerWidget.palette,
         *Button.palette,
