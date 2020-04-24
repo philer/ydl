@@ -1,7 +1,7 @@
 import asyncio
+from dataclasses import dataclass, field
 from functools import partial
-from typing import (cast, Any, Callable, Dict, Iterable, Iterator, List,
-                    Optional, Sequence, TypeVar)
+from typing import Any, Callable, List
 
 noawait = asyncio.create_task
 
@@ -39,3 +39,25 @@ class ThreadsafeProxy:
 
     def __dir__(self):
         return dir(self._instance)
+
+
+@dataclass(eq=False)
+class Observable:
+    """A simplistic observer pattern."""
+
+    _observers: List[Callable[..., None]] = field(
+        init=False, repr=False, compare=False, default_factory=list)
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        self._notify(name, value)
+
+    def _notify(self, *args, **kwargs):
+        for observer in self._observers:
+            observer(self, *args, **kwargs)
+
+    def subscribe(self, callback: Callable[..., None]):
+        self._observers.append(callback)
+
+    def unsubscribe(self, callback: Callable[..., None]):
+        self._observers.remove(callback)

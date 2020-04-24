@@ -83,7 +83,7 @@ class VideoWidget(WidgetWrap):
         self._root = Columns(columns, dividechars=1)
         super().__init__(self._root)
 
-        video.observers.append(self._handle_update)
+        video.subscribe(self._handle_update)
 
     def _handle_update(self, _video, prop, _value):
         if prop in {"status", "progress", "playing"}:
@@ -528,7 +528,7 @@ class Ui:
         self._videos_to_widgets[video] = vw
         if self._show_deleted or video.status != "deleted":
             self._video_list.append(vw)
-        video.observers.append(self._video_updated)
+        video.subscribe(self._video_updated)
 
     def _video_updated(self, video, attribute, value):
         if value == "deleted" and attribute == "status" and not self._show_deleted:

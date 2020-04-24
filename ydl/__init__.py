@@ -12,7 +12,6 @@ import signal
 import subprocess
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date
 from functools import partial, wraps
@@ -24,7 +23,7 @@ from urllib.parse import urlparse
 import youtube_dl  # type: ignore
 import requests
 
-from .util import noawait, ThreadsafeProxy
+from .util import noawait, Observable, ThreadsafeProxy
 from .ui import Ui
 
 
@@ -63,7 +62,7 @@ ydl_settings = {
 F = TypeVar('F', bound=Callable[..., Any])
 
 @dataclass(eq=False)
-class Video:
+class Video(Observable):
     """Primary model."""
     url: str
     status: str = "pending"
@@ -79,8 +78,6 @@ class Video:
 
     _original: Optional[Video] = field(init=False, repr=False, compare=False,
                                        default=None)
-    observers: List[Callable] = field(init=False, repr=False, compare=False,
-                                      default_factory=list)
     playing: int = field(init=False, repr=False, compare=False, default=0)
 
     def original(method: F) -> F:  # type: ignore
@@ -97,9 +94,6 @@ class Video:
     def __setattr__(self, name, value):
         """A simplistic observer pattern."""
         super().__setattr__(name, value)
-        with suppress(AttributeError):  # missing self.observers during __init__
-            for observer in self.observers:
-                observer(self, name, value)
 
     @property
     def hostname(self):
@@ -144,7 +138,7 @@ class Video:
         self.status = "duplicate"
         for prop in self._meta_properties:
             setattr(self, prop, getattr(original, prop))
-        original.observers.append(self._handle_update)
+        original.subscribe(self._handle_update)
         self._original = original
 
     def _handle_update(self, original: Video, prop: str, value: Any):
