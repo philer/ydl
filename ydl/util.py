@@ -9,6 +9,10 @@ def noop(*args, **kwargs):
     pass
 
 
+def clamp(low, high, value):
+    return low if value < low else high if value > high else value
+
+
 def noawait(coroutine):
     """Execute a coroutine without 'await'."""
     return asyncio.get_event_loop().create_task(coroutine)
@@ -58,7 +62,8 @@ class Observable:
 
     def __setattr__(self, name, value):
         super().__setattr__(name, value)
-        self._notify(name, value)
+        if name[0] != '_':
+            self._notify(name, value)
 
     def _notify(self, *args, **kwargs):
         for observer in self._observers:

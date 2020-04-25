@@ -375,13 +375,9 @@ class Playlist(Observable):
     def __init__(self, videos):
         super().__init__()
         self.videos = videos
+        self.current = None
         self._iter = iter(videos)
-        self._current = None
         self._task = None
-
-    @property
-    def current(self):
-        return self._current
 
     def start(self):
         if self._task is None:
@@ -393,7 +389,7 @@ class Playlist(Observable):
             log.debug("Stopping playlist")
             self._task.cancel()
             self._task = None
-            self._current = None
+            self.current = None
 
     def __aiter__(self):
         return self
@@ -403,8 +399,8 @@ class Playlist(Observable):
 
     async def _run(self):
         try:
-            async for self._current in self:
-                await self._current.play()
+            async for self.current in self:
+                await self.current.play()
                 await asyncio.sleep(self.delay)
         except Exception as e:
             log.exception(e)
@@ -416,7 +412,7 @@ class RandomPlaylist(Playlist):
 
     async def __anext__(self):
         video = random.choice(self._source)
-        self.videos.append(video)
+        self.videos = self.videos + [video]
         return video
 
 class QueuePlaylist(Playlist):
@@ -426,7 +422,7 @@ class QueuePlaylist(Playlist):
 
     async def __anext__(self):
         video = await self._queue.get()
-        self.videos.append(video)
+        self.videos = self.videos + [video]
         return video
 
 
@@ -462,7 +458,7 @@ class YDL:
         try:
             self.downloads.shutdown()
             while self._playlists:
-                self.pop_playlist()
+                self.remove_playlist()
             self._aio_loop.run_until_complete(self._cleanup_tasks())
             self._aio_loop.close()
         except Exception as e:
@@ -513,23 +509,19 @@ class YDL:
     def start_playlist(self):
         self.add_playlist(QueuePlaylist(self._session_added))
 
-    def stop_playlist(self):
-        self.pop_playlist()  # TODO
-
     def start_random_playlist(self):
         self.add_playlist(RandomPlaylist(self.videos))
 
-    def stop_random_playlist(self):
-        self.pop_playlist()  # TODO
-
     def add_playlist(self, playlist: Playlist):
         self._playlists.append(playlist)
+        self.ui.add_playlist(len(self._playlists) - 1, playlist)
         playlist.start()
 
-    # TODO removal by ID
-    def pop_playlist(self):
+    def remove_playlist(self, index: int=None):
+        if index is None:
+            index = len(self._playlists) - 1
         try:
-            playlist = self._playlists.pop()
+            playlist = self._playlists.pop(index)
         except IndexError:
             pass
         else:

@@ -9,7 +9,7 @@ import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, List, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import pyperclip  # type: ignore
 import urwid  # type: ignore
@@ -18,10 +18,10 @@ from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
                    Pile, SimpleFocusListWalker, Text,
                    Widget, WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
-from .util import noawait, noop
+from .util import clamp, noawait, noop, Observable
 
 if TYPE_CHECKING:
-    from . import Video
+    from . import Video, Playlist
 
 Palette = Tuple[Union[
     # (name, copy_from)
@@ -31,6 +31,14 @@ Palette = Tuple[Union[
     # (name, foreground, background, mono, foreground_high, background_high)
     Tuple[str, str, str, str, str, str]
 ],...]
+
+BoxWidgetSize = Tuple[int, int]
+FlowWidgetSize = Tuple[int]
+WidgetSize = Union[BoxWidgetSize, FlowWidgetSize]
+
+# mypy _still_ doesn't support recursive types...
+_Markup = Union[str, Tuple[str, Union[str, Tuple[str, str]]]]
+Markup = Union[_Markup, List[_Markup]]
 
 
 log = logging.getLogger(__name__)
@@ -70,7 +78,7 @@ class VideoWidget(WidgetWrap):
             return f"{self._video.extractor}:{self._video.id} - {self._video.title}"
         return self._video.url
 
-    def __init__(self, ui, video: Video):
+    def __init__(self, ui: Ui, video: Video):
         self._ui = ui
         self._video = video
 
@@ -86,7 +94,7 @@ class VideoWidget(WidgetWrap):
 
         video.subscribe(self._handle_update)
 
-    def _handle_update(self, _video, prop, _value):
+    def _handle_update(self, _video: Video, prop: str, _value: Any):
         if prop in {"status", "progress", "playing"}:
             self.update_status_icon()
         self._invalidate()
@@ -128,11 +136,12 @@ class VideoWidget(WidgetWrap):
         else:
             return key
 
-    def render(self, size, focus=False):
+    def render(self, size: WidgetSize, focus=False):
         """Update appearance based on video status, widget focus and size."""
         width = size[0]
         status = self._video.status
         focused = "_focus" if focus else ""
+        info_text: Markup
         if status == "downloading":
             info = f"{self._info:<{width}.{width}}"
             filled_width = int(width * self._video.progress)
@@ -157,11 +166,27 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         WidgetDecoration.__init__(self, list_box)
         WidgetWrap.__init__(self, root)
 
-    def render(self, size, focus=False):
-        self._render_scrollbar(size, focus)
-        return WidgetWrap.render(self, size, focus)
+    def mouse_event(self, size: BoxWidgetSize, event: str, button: int, col: int, row: int, *args):
+        maxcol, maxrow = size
+        if col == maxcol - 1:
+            if button == 1 and event in {'mouse press', 'mouse drag'}:
+                self.scroll_to(size, row / maxrow)
+                return True
+            return False
+        if self._list_box.mouse_event(size, event, button, col, row, *args):
+            return True
+        if 4 <= button <= 5:  # scrollwheel
+            with suppress(IndexError):
+                self._list_box.focus_position += 1 if button == 5 else -1
+                self._invalidate()
+            return True
+        return False
 
-    def _render_scrollbar(self, size, focus):
+    def scroll_to(self, size: WidgetSize, fraction: float):
+        """Scroll the ListBox to center the appropriate widget."""
+        self._list_box.focus_position = int(fraction * len(self._list_box.body))
+
+    def _render_scrollbar(self, size: BoxWidgetSize, focus: bool):
         maxcol, maxrow = size
         size = maxcol - 1, maxrow
 
@@ -199,84 +224,85 @@ class Scrollbar(WidgetDecoration, WidgetWrap):
         bottom = "╿" * bottom_half + "│" * bottom_full
         self._bar.set_text(top + middle + bottom)
 
-    def scroll_to(self, fraction):
-        """Scroll the ListBox to center the appropriate widget."""
-        self._list_box.focus_position = int(fraction * len(self._list_box.body))
-
-    def mouse_event(self, size, event, button, col, row, focus):
-        maxcol, maxrow = size
-        if col == maxcol - 1:
-            if button == 1 and event in {'mouse press', 'mouse drag'}:
-                self.scroll_to(row / maxrow)
-                return True
-            return False
-        if self._list_box.mouse_event(size, event, button, col, row, focus):
-            return True
-        if 4 <= button <= 5:  # scrollwheel
-            with suppress(IndexError):
-                self._list_box.focus_position += 1 if button == 5 else -1
-                self._invalidate()
-            return True
-        return False
+    def render(self, size, focus=False):
+        self._render_scrollbar(size, focus)
+        return WidgetWrap.render(self, size, focus)
 
 
 class VideoList(Scrollbar):
 
-    def __init__(self, videos=[]):
-        super().__init__(ListBox(SimpleFocusListWalker(videos)))
+    def __init__(self, ui: Ui, videos: List[Video]):
+        self._ui = ui
+        ui.subscribe(self._handle_ui_update)
+        self._videos: List[Video] = []
+        self._video_widgets: Dict[Video, VideoWidget] = dict()
+        super().__init__(ListBox(SimpleFocusListWalker([])))
+        if videos:
+            self.set_videos(videos)
 
-    def set_videos(self, videos):
-        videos = list(videos)
-        old_videos = self._list_box.body
-        focus = self._list_box.focus_position
-        self._list_box.body = SimpleFocusListWalker(videos)
+    def _handle_ui_update(self, _ui: Ui, attribute: str, value: Any):
+        if attribute == "show_deleted":
+            self.set_videos(self._videos)
 
-        focus_candidates = old_videos[focus:] + old_videos[focus - 1::-1]
-        lookup = {vid: idx for idx, vid in enumerate(videos)}
-        for vid in focus_candidates:
-            with suppress(KeyError):
-                self._list_box.focus_position = lookup[vid]
-                break
-
-    def remove(self, video):
-        focus = self._list_box.focus_position
-        self._list_box.body.remove(video)
+    def _get_widget(self, video: Video) -> VideoWidget:
         try:
-            self._list_box.focus_position = focus
+            return self._video_widgets[video]
+        except KeyError:
+            return self._video_widgets.setdefault(video, VideoWidget(self._ui, video))
+
+    def set_videos(self, videos: List[Video]):
+        self._videos = videos
+        vws = [self._get_widget(video) for video in videos
+               if self._ui.show_deleted or video.status != "deleted"]
+
+        old_widgets = self._list_box.body
+        try:
+            focus = self._list_box.focus_position
         except IndexError:
-            self._list_box.focus_position = focus - 1
+            focus = None
+        self._list_box.body = SimpleFocusListWalker(vws)
+        if focus:
+            focus_candidates = old_widgets[focus:] + old_widgets[focus - 1::-1]
+            lookup = {widget: idx for idx, widget in enumerate(vws)}
+            for widget in focus_candidates:
+                with suppress(KeyError):
+                    self._list_box.focus_position = lookup[widget]
+                    break
 
-    def append(self, video):
-        self._list_box.body.append(video)
-        self._list_box.focus_position = len(self._list_box.body) - 1
+    def append(self, video: Video):
+        self._videos.append(video)
+        if self._ui.show_deleted or video.status != "deleted":
+            self._list_box.body.append(self._get_widget(video))
+            self._list_box.focus_position = len(self._list_box.body) - 1
+
+    def remove(self, video: Video):
+        self._videos.remove(video)
+        if self._ui.show_deleted or video.status != "deleted":
+            focus = self._list_box.focus_position
+            self._list_box.body.remove(self._get_widget(video))
+            try:
+                self._list_box.focus_position = focus
+            except IndexError:
+                self._list_box.focus_position = focus - 1
+
+    def set_focus(self, index: int):
+        self._list_box.focus_position = index
 
 
-class LogHandlerWidget(WidgetWrap, logging.Handler):
-    """Show log messages in a scrollable window for live debugging."""
+class PlaylistWidget(VideoList):
+    def __init__(self, ui: Ui, playlist: Playlist):
+        super().__init__(ui, playlist.videos)
+        playlist.subscribe(self._update)
 
-    palette: Palette = (
-        ("log_DEBUG", "",  ""),
-        ("log_INFO", "light blue",  ""),
-        ("log_WARNING", "yellow", ""),
-        ("log_ERROR", "light red", ""),
-        ("log_EXCEPTION", "log_ERROR"),
-        ("log_CRITICAL", "log_ERROR"),
-        ("log_NOTSET", "log_DEBUG"),
-    )
-
-    def __init__(self, logger=None, level=logging.DEBUG):
-        self._records = ListBox(SimpleFocusListWalker([]))
-        WidgetWrap.__init__(self, Scrollbar(self._records))
-
-        logging.Handler.__init__(self)
-        self.setLevel(level)
-        (logger or logging.getLogger(__package__)).addHandler(self)
-
-    def emit(self, record):
-        style = f"log_{record.levelname}"
-        text = f"{record.levelname} {record.name}: {record.getMessage()}"
-        self._records.body.append(Text((style, text)))
-        self._records.focus_position = len(self._records.body) - 1
+    def _update(self, playlist: Playlist, attribute: str, value: Any):
+        if attribute == "videos":
+            self.set_videos(playlist.videos)
+        elif attribute == "current":
+            try:
+                index = playlist.videos.index(value)
+                self.set_focus(index)
+            except (ValueError, IndexError):
+                pass
 
 
 class Button(WidgetWrap):
@@ -310,11 +336,12 @@ class Button(WidgetWrap):
             return True
         return False
 
+
 @dataclass(frozen=True)
 class Tab:
     label: str
     body: Widget
-    on_close: Callable[..., None] = noop
+    on_close: Optional[Callable[..., None]]
 
 class TabMenu(WidgetWrap):
 
@@ -357,23 +384,28 @@ class TabMenu(WidgetWrap):
     def close(self, index: int=None):
         if index is None:
             index = self._current
-        tab = self._tabs.pop(index)
-        if tab.on_close and tab.on_close() is False:
+        if (on_close := self._tabs[index].on_close) and on_close() is False:
             return
+        self._tabs.pop(index)
         self._menu.contents.pop(index)
         if self._current == index:
             self.select(index)
 
     def select(self, index: int):
+        index = clamp(0, len(self._tabs) - 1, index)
+        log.debug(f"selecting tab {index}")
         try:
             self._menu.contents[self._current][0].set_attr_map({None: "tab"})
         except IndexError:
             pass
-        self._menu.focus_position = index
-        self._menu.contents[index][0].set_attr_map({None: "tab_active"})
-        self._root.body = self._tabs[index].body
+        try:
+            self._menu.focus_position = index
+            self._menu.contents[index][0].set_attr_map({None: "tab_active"})
+            self._root.body = self._tabs[index].body
+            self._current = index
+        except IndexError:
+            pass
         self._root.focus_position = 'body'
-        self._current = index
 
     def _cycle(self, by: int):
         total = len(self._tabs)
@@ -471,6 +503,34 @@ class Dialog(WidgetWrap):
             return key
 
 
+class LogHandlerWidget(WidgetWrap, logging.Handler):
+    """Show log messages in a scrollable window for live debugging."""
+
+    palette: Palette = (
+        ("log_DEBUG", "",  ""),
+        ("log_INFO", "light blue",  ""),
+        ("log_WARNING", "yellow", ""),
+        ("log_ERROR", "light red", ""),
+        ("log_EXCEPTION", "log_ERROR"),
+        ("log_CRITICAL", "log_ERROR"),
+        ("log_NOTSET", "log_DEBUG"),
+    )
+
+    def __init__(self, logger=None, level=logging.DEBUG):
+        self._records = ListBox(SimpleFocusListWalker([]))
+        WidgetWrap.__init__(self, Scrollbar(self._records))
+
+        logging.Handler.__init__(self)
+        self.setLevel(level)
+        (logger or logging.getLogger(__package__)).addHandler(self)
+
+    def emit(self, record):
+        style = f"log_{record.levelname}"
+        text = f"{record.levelname} {record.name}: {record.getMessage()}"
+        self._records.body.append(Text((style, text)))
+        self._records.focus_position = len(self._records.body) - 1
+
+
 class CustomEventLoop(AsyncioEventLoop):
     """
     Urwid's AsyncioEventLoop's exception handling is broken.
@@ -491,7 +551,7 @@ class CustomEventLoop(AsyncioEventLoop):
                 self._exc_info = (type(exc), exc, exc.__traceback__)
 
 
-class Ui:
+class Ui(Observable):
     palette: Palette = (
         *VideoWidget.palette,
         *LogHandlerWidget.palette,
@@ -502,14 +562,16 @@ class Ui:
     )
 
     def __init__(self, core, aio_loop):
+        super().__init__()
         self._core = core
         self._aio_loop = aio_loop
 
-        self._show_deleted = False
+        self.show_deleted = False
 
-        self._videos_to_widgets = dict()
-        self._video_list = VideoList()
-        self._visible_windows = Pile([self._video_list])
+        self._video_list = VideoList(self, [])
+        self._main = TabMenu([Tab('Downloads', self._video_list,
+                                  on_close=lambda: False)])
+        self._visible_windows = Pile([self._main])
         self._root = WidgetPlaceholder(self._visible_windows)
 
         self._loop = MainLoop(widget=self._root,
@@ -536,12 +598,8 @@ class Ui:
                 self._handle_urls(pyperclip.paste())
         elif key == "p":
             self._core.start_playlist()
-        elif key == "P":
-            self._core.stop_playlist()
         elif key == "r":
             self._core.start_random_playlist()
-        elif key == "R":
-            self._core.stop_random_playlist()
         elif key == "h":
             self.toggle_show_deleted()
         elif key == "l":
@@ -555,24 +613,19 @@ class Ui:
 
     def add_video(self, video):
         """Wrap a new video and add it to the display."""
-        vw = VideoWidget(self, video)
-        self._videos_to_widgets[video] = vw
-        if self._show_deleted or video.status != "deleted":
-            self._video_list.append(vw)
-        video.subscribe(self._video_updated)
+        self._video_list.append(video)
 
-    def _video_updated(self, video, attribute, value):
-        if value == "deleted" and attribute == "status" and not self._show_deleted:
-            self._video_list.remove(self._videos_to_widgets[video])
+    def add_playlist(self, index: int, playlist: Playlist):
+        self._main.append(Tab(
+            f"Playlist {index}",
+            PlaylistWidget(self, playlist),
+            on_close=partial(self._core.remove_playlist, index)
+        ))
 
     def toggle_show_deleted(self):
-        self._show_deleted = not self._show_deleted
-        if self._show_deleted:
-            show = self._videos_to_widgets.values()
-        else:
-            show = [vw for v, vw in self._videos_to_widgets.items()
-                    if v.status != "deleted"]
-        self._video_list.set_videos(show)
+        self.show_deleted = not self.show_deleted
+        self._root._invalidate()
+        self._loop.draw_screen()
 
     def toggle_log_window(self):
         self._log_window_visible = not self._log_window_visible
