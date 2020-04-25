@@ -7,6 +7,7 @@ import asyncio
 import logging
 import sys
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, List, Tuple, Union
 
@@ -17,7 +18,7 @@ from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
                    Pile, SimpleFocusListWalker, Text,
                    Widget, WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
-from .util import noawait
+from .util import noawait, noop
 
 if TYPE_CHECKING:
     from . import Video
@@ -277,6 +278,7 @@ class LogHandlerWidget(WidgetWrap, logging.Handler):
         self._records.body.append(Text((style, text)))
         self._records.focus_position = len(self._records.body) - 1
 
+
 class Button(WidgetWrap):
     """Custom button with a simpler style."""
 
@@ -285,9 +287,9 @@ class Button(WidgetWrap):
         ("button_focus", "bold,standout", ""),
     )
 
-    def __init__(self, caption: str, *, onClick: Callable[[], None]=None,
+    def __init__(self, caption: str, *, on_click: Callable[[], None]=None,
                  style="button", focus_style="button_focus"):
-        self._onClick = onClick
+        self._on_click = on_click
         root = AttrMap(Text(caption), style, focus_style)
         super().__init__(root)
 
@@ -296,18 +298,23 @@ class Button(WidgetWrap):
 
     def keypress(self, _size, key):
         """Send "click" signal on 'activate' command."""
-        if self._onClick and self._command_map[key] == urwid.ACTIVATE:
-            self._onClick()
+        if self._on_click and self._command_map[key] == urwid.ACTIVATE:
+            self._on_click()
         else:
             return key
 
     def mouse_event(self, _size, event, button, *_):
         """Send "click" signal on button 1 press."""
-        if self._onClick and button == 1 and urwid.util.is_mouse_press(event):
-            self._onClick()
+        if self._on_click and button == 1 and urwid.util.is_mouse_press(event):
+            self._on_click()
             return True
         return False
 
+@dataclass(frozen=True)
+class Tab:
+    label: str
+    body: Widget
+    on_close: Callable[..., None] = noop
 
 class TabMenu(WidgetWrap):
 
@@ -316,45 +323,69 @@ class TabMenu(WidgetWrap):
         ("tab_active", "bold,underline",""),
     )
 
-    def __init__(self, tabs: List[Tuple[str, Widget]]):
-        self._labels, self._bodies = zip(*tabs)
-        self._buttons = [
-            AttrMap(Button(label, onClick=partial(self.select, index), style=None), "tab")
-            for index, label in enumerate(self._labels)
-        ]
-        if self._buttons:
-            self._buttons[0].set_attr_map({None: "tab_active"})
-        self._menu = Columns(
-            [('pack', button) for button in self._buttons],
-            dividechars=1
-        )
+    def __init__(self, tabs: List[Tab]):
+        self._menu = Columns([], dividechars=1)
         self._root = Frame(
             header=Pile([self._menu, AttrMap(Divider("─"), "divider")]),
-            body=self._bodies[0] if len(tabs) else None
+            body=None
         )
         super().__init__(self._root)
 
+        self._current = -1
+        self._tabs: List[Tab] = []
+        for tab in tabs:
+            self.append(tab)
+
+    def append(self, tab: Tab):
+        self.insert(tab, len(self._tabs))
+
+    def insert(self, tab: Tab, index: int):
+        self._tabs.insert(index, tab)
+        self._menu.contents.insert(
+            index,
+            (
+                AttrMap(
+                    Button(tab.label, style=None,
+                           on_click=partial(self.select, index)),
+                    "tab"
+                ),
+                self._menu.options('pack', None, False),
+            )
+        )
+        self.select(index)
+
+    def close(self, index: int=None):
+        if index is None:
+            index = self._current
+        tab = self._tabs.pop(index)
+        if tab.on_close and tab.on_close() is False:
+            return
+        self._menu.contents.pop(index)
+        if self._current == index:
+            self.select(index)
+
     def select(self, index: int):
         try:
-            current = self._menu.focus_position
-            self._menu.focus_position = index
-            self._buttons[current].set_attr_map({None: "tab"})
-            self._buttons[index].set_attr_map({None: "tab_active"})
-            self._root.body = self._bodies[index]
-            self._root.focus_position = 'body'
+            self._menu.contents[self._current][0].set_attr_map({None: "tab"})
         except IndexError:
             pass
+        self._menu.focus_position = index
+        self._menu.contents[index][0].set_attr_map({None: "tab_active"})
+        self._root.body = self._tabs[index].body
+        self._root.focus_position = 'body'
+        self._current = index
 
     def _cycle(self, by: int):
-        total = len(self._labels)
-        current = self._menu.focus_position
-        self.select((current + by + total) % total)
+        total = len(self._tabs)
+        self.select((self._current + by + total) % total)
 
     def keypress(self, size, key):
         if key == "ctrl left" or key == "ctrl shift tab":
             self._cycle(-1)
         elif key == "ctrl right" or key == "ctrl tab":
             self._cycle(1)
+        elif key == "ctrl w":
+            self.close()
         else:
             try:
                 meta, n = key.split()
@@ -364,6 +395,7 @@ class TabMenu(WidgetWrap):
             except ValueError:
                 pass
             return self._root.keypress(size, key)
+
 
 class Dialog(WidgetWrap):
     """
@@ -383,14 +415,14 @@ class Dialog(WidgetWrap):
             btns = [
                 button if isinstance(button, Button) else
                 Button(f"[{button.capitalize()}]",
-                       onClick=partial(self.close, button))
+                       on_click=partial(self.close, button))
                 for button in buttons
             ]
             columns = Columns([
                 Divider(),
                 *[('pack', btn) for btn in btns],
                 Divider(),
-            ])
+            ], dividechars=1)
             columns.focus_position = len(buttons)
             content = Pile([
                 content,

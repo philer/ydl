@@ -4,6 +4,10 @@ from functools import partial
 from typing import Any, Callable, List
 
 
+def noop(*args, **kwargs):
+    """Does nothing."""
+    pass
+
 
 def noawait(coroutine):
     """Execute a coroutine without 'await'."""
