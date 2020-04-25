@@ -3,7 +3,11 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, List
 
-noawait = asyncio.create_task
+
+
+def noawait(coroutine):
+    """Execute a coroutine without 'await'."""
+    return asyncio.get_event_loop().create_task(coroutine)
 
 
 class ThreadsafeProxy:
