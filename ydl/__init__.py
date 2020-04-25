@@ -303,7 +303,7 @@ class DownloadManager:
         """Interrupt all running threads and wait for them to return."""
         self._interrupted = True
         for ex in self._download_executors.values():
-            ex.shutdown(wait=True)
+            ex.shutdown(wait=False)
 
     def _raise_interrupt(self, _: Any):
         """
@@ -368,11 +368,12 @@ class DownloadManager:
             pass
 
 
-class Playlist:
+class Playlist(Observable):
 
     delay = 0
 
     def __init__(self, videos):
+        super().__init__()
         self.videos = videos
         self._iter = iter(videos)
         self._current = None
@@ -458,11 +459,14 @@ class YDL:
         log.debug("Starting main loop.")
         self.ui.run_loop()
         log.debug("Waiting for pending tasks to finish…")
-        self.downloads.shutdown()
-        while self._playlists:
-            self.pop_playlist()
-        self._aio_loop.run_until_complete(self._cleanup_tasks())
-        self._aio_loop.close()
+        try:
+            self.downloads.shutdown()
+            while self._playlists:
+                self.pop_playlist()
+            self._aio_loop.run_until_complete(self._cleanup_tasks())
+            self._aio_loop.close()
+        except Exception as e:
+            log.error(e)
         self.archive.update(self.videos)
         log.debug("Bye.")
 
