@@ -73,12 +73,16 @@ class Video(Observable):
     _meta_properties = "extractor", "id", "title", "ext"
     extractor: str = ""
     id: str = ""
-    title: str = "(no title)"
+    title: str = ""
     ext: str = ""
 
     _original: Optional[Video] = field(init=False, repr=False, compare=False,
                                        default=None)
     playing: int = field(init=False, repr=False, compare=False, default=0)
+
+    def __post_init__(self):
+        if not self.title:
+            self.title = self.url
 
     def original(method: F) -> F:  # type: ignore
         """Method decorator to only call state mutating methods
@@ -270,6 +274,7 @@ class Archive:
                 log.info(f"Creating backup of .ydl_archive at {backup}")
                 shutil.copyfile(self._filename, backup)
 
+        log.info("Writing archive...")
         with open(self._filename, "wt") as archive:
             for video in videos:
                 if video.status == "pending":
