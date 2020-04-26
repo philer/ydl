@@ -15,7 +15,7 @@ import pyperclip  # type: ignore
 import urwid  # type: ignore
 from urwid import (AsyncioEventLoop, AttrMap, Columns, Divider, ExitMainLoop,
                    Filler, Frame, LineBox, ListBox, MainLoop, Overlay, Padding,
-                   Pile, SimpleFocusListWalker, Text,
+                   Pile, SimpleFocusListWalker, SolidFill, Text,
                    Widget, WidgetDecoration, WidgetPlaceholder, WidgetWrap)
 
 from .util import clamp, noawait, noop, Observable
@@ -341,44 +341,88 @@ class Button(WidgetWrap):
 class Tab:
     label: str
     body: Widget
-    on_close: Optional[Callable[..., None]]
+    on_close: Optional[Callable[..., None]] = noop
 
 class TabMenu(WidgetWrap):
+    """
+    ┌─────┲━━━━━┱─────┐
+    │ tab ┃ tab ┃ tab │
+    ┴─────┺━━━━━┹─────┴──────
+    """
 
     palette: Palette = (
-        ("tab", "", ""),
-        ("tab_active", "bold,underline",""),
+        ("tab", "light gray", "", "", "#aaa", ""),
+        ("tab_label", "", ""),
+        ("tab_label_active", "bold", ""),
     )
 
+    _header_filler = Divider('─', top=2)
+    _body_filler = SolidFill('▒')
+
     def __init__(self, tabs: List[Tab]):
-        self._menu = Columns([], dividechars=1)
+        self._menu = Columns([], dividechars=0)
         self._root = Frame(
-            header=Pile([self._menu, AttrMap(Divider("─"), "divider")]),
-            body=None
+            header=AttrMap(self._menu, "tab"),
+            body=self._body_filler
         )
         super().__init__(self._root)
-
         self._current = -1
-        self._tabs: List[Tab] = []
-        for tab in tabs:
-            self.append(tab)
+        self._tabs = tabs
+        if tabs:
+            self._current = 0
+            self._root.body = tabs[0].body
+        self._make_menu()
+
+    def _make_tab(self, index: int) -> Tuple[Widget, Tuple[str, int, bool]]:
+        is_active = index == self._current
+        is_last = index == len(self._tabs) - 1
+        label = f" {self._tabs[index].label} "
+        hline = '━' if is_active else '─'
+        args = {
+            "tline": hline,
+            "bline": hline,
+            "trcorner": hline,  # LineBox bug?
+            "rline": "",
+            "brcorner": hline,  # LineBox bug?
+        }
+        if index == 0:
+            left = "┏┃┺" if is_active else "┌│┴"
+        else:
+            if is_active:
+                left = "┲┃┺"
+            elif index - 1 == self._current:
+                left = "┱┃┹"
+            else:
+                left = "┬│┴"
+        args["tlcorner"], args["lline"], args["blcorner"] = left
+        if is_last:
+            right = "┓┃┹" if is_active else "┐│┴"
+            args["trcorner"], args["rline"], args["brcorner"] = right
+        return (
+            LineBox(
+                Button(
+                    label,
+                    style="tab_label_active" if is_active else "tab_label",
+                    on_click=partial(self.select, index)
+                ),
+                **args
+            ),
+            ('given', len(label) + (2 if is_last else 1), False)
+        )
+
+
+    def _make_menu(self):
+        total = len(self._tabs)
+        boxes = [self._make_tab(i) for i in range(len(self._tabs))]
+        boxes.append((self._header_filler, ('weight', 1, False)))
+        self._menu.contents = boxes
 
     def append(self, tab: Tab):
         self.insert(tab, len(self._tabs))
 
     def insert(self, tab: Tab, index: int):
+        index = clamp(0, len(self._tabs), index)
         self._tabs.insert(index, tab)
-        self._menu.contents.insert(
-            index,
-            (
-                AttrMap(
-                    Button(tab.label, style=None,
-                           on_click=partial(self.select, index)),
-                    "tab"
-                ),
-                self._menu.options('pack', None, False),
-            )
-        )
         self.select(index)
 
     def close(self, index: int=None):
@@ -387,24 +431,12 @@ class TabMenu(WidgetWrap):
         if (on_close := self._tabs[index].on_close) and on_close() is False:
             return
         self._tabs.pop(index)
-        self._menu.contents.pop(index)
-        if self._current == index:
-            self.select(index)
+        self.select(index)
 
     def select(self, index: int):
-        index = clamp(0, len(self._tabs) - 1, index)
-        log.debug(f"selecting tab {index}")
-        try:
-            self._menu.contents[self._current][0].set_attr_map({None: "tab"})
-        except IndexError:
-            pass
-        try:
-            self._menu.focus_position = index
-            self._menu.contents[index][0].set_attr_map({None: "tab_active"})
-            self._root.body = self._tabs[index].body
-            self._current = index
-        except IndexError:
-            pass
+        self._current = clamp(0, len(self._tabs) - 1, index)
+        self._make_menu()
+        self._root.body = self._tabs[self._current].body
         self._root.focus_position = 'body'
 
     def _cycle(self, by: int):
@@ -569,8 +601,9 @@ class Ui(Observable):
         self.show_deleted = False
 
         self._video_list = VideoList(self, [])
-        self._main = TabMenu([Tab('Downloads', self._video_list,
-                                  on_close=lambda: False)])
+        self._main = TabMenu([
+            Tab("Downloads", self._video_list, on_close=lambda: False),
+        ])
         self._visible_windows = Pile([self._main])
         self._root = WidgetPlaceholder(self._visible_windows)
 
