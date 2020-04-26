@@ -341,6 +341,7 @@ class Button(WidgetWrap):
 class Tab:
     label: str
     body: Widget
+    permanent: bool = False
     on_close: Optional[Callable[..., None]] = noop
 
 class TabMenu(WidgetWrap):
@@ -398,16 +399,22 @@ class TabMenu(WidgetWrap):
         if is_last:
             right = "┓┃┹" if is_active else "┐│┴"
             args["trcorner"], args["rline"], args["brcorner"] = right
+        widget: Widget = Button(
+            label,
+            style="tab_label_active" if is_active else "tab_label",
+            on_click=partial(self.select, index)
+        )
+        permanent = self._tabs[index].permanent
+        if not permanent:
+            widget = Columns([
+                (len(label), widget),
+                (2, Button('✕ ', style="tab", on_click=partial(self.close, index))),
+            ])
         return (
-            LineBox(
-                Button(
-                    label,
-                    style="tab_label_active" if is_active else "tab_label",
-                    on_click=partial(self.select, index)
-                ),
-                **args
-            ),
-            ('given', len(label) + (2 if is_last else 1), False)
+            LineBox(widget, **args),
+            ('given',
+             len(label) + (0 if permanent else 2) + (2 if is_last else 1),
+             False)
         )
 
 
@@ -428,7 +435,8 @@ class TabMenu(WidgetWrap):
     def close(self, index: int=None):
         if index is None:
             index = self._current
-        if (on_close := self._tabs[index].on_close) and on_close() is False:
+        if (self._tabs[index].permanent or
+            (on_close := self._tabs[index].on_close) and on_close() is False):
             return
         self._tabs.pop(index)
         self.select(index)
@@ -602,7 +610,7 @@ class Ui(Observable):
 
         self._video_list = VideoList(self, [])
         self._main = TabMenu([
-            Tab("Downloads", self._video_list, on_close=lambda: False),
+            Tab("Downloads", self._video_list, permanent=True),
         ])
         self._visible_windows = Pile([self._main])
         self._root = WidgetPlaceholder(self._visible_windows)
