@@ -9,7 +9,7 @@ import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import pyperclip  # type: ignore
 import urwid  # type: ignore
@@ -23,14 +23,14 @@ from .util import clamp, noawait, noop, Observable
 if TYPE_CHECKING:
     from . import Video, Playlist
 
-Palette = Tuple[Union[
+Palette = Sequence[Union[
     # (name, copy_from)
     Tuple[str, str],
     # (name, foreground, background)
     Tuple[str, str, str],
     # (name, foreground, background, mono, foreground_high, background_high)
     Tuple[str, str, str, str, str, str]
-],...]
+]]
 
 BoxWidgetSize = Tuple[int, int]
 FlowWidgetSize = Tuple[int]
@@ -622,7 +622,10 @@ class Ui(Observable):
         self._loop.screen.set_terminal_properties(
             colors=256, bright_is_bold=False, has_underline=True)
 
-        self._log_window = Pile([AttrMap(Divider("─"), "divider"), (5, LogHandlerWidget())]), ('pack', None)
+        self._log_window = Pile([
+            (1, AttrMap(SolidFill("─"), "divider")),
+            LogHandlerWidget(),
+        ]), ('weight', .33)
         self._log_window_visible = False
 
     def run_loop(self):
