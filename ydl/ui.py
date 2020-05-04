@@ -346,9 +346,9 @@ class Tab:
 
 class TabMenu(WidgetWrap):
     """
-    ┌─────┲━━━━━┱─────┐
-    │ tab ┃ tab ┃ tab │
-    ┴─────┺━━━━━┹─────┴──────
+    ┌─────┲━━━━━┱─────┬─────┐
+    │ tab ┃ tab ┃ tab │ tab │
+    ┷━━━━━┛     ┗━━━━━┷━━━━━┷━━━━━━
     """
 
     palette: Palette = (
@@ -357,7 +357,7 @@ class TabMenu(WidgetWrap):
         ("tab_label_active", "bold", ""),
     )
 
-    _header_filler = Divider('─', top=2)
+    _header_filler = Divider('━', top=2)
     _body_filler = SolidFill('▒')
 
     def __init__(self, tabs: List[Tab]):
@@ -375,29 +375,30 @@ class TabMenu(WidgetWrap):
         self._make_menu()
 
     def _make_tab(self, index: int) -> Tuple[Widget, Tuple[str, int, bool]]:
+        label = f" {self._tabs[index].label} "
         is_active = index == self._current
         is_last = index == len(self._tabs) - 1
-        label = f" {self._tabs[index].label} "
-        hline = '━' if is_active else '─'
+        tline = '━' if is_active else '─'
+        bline = ' ' if is_active else '━'
         args = {
-            "tline": hline,
-            "bline": hline,
-            "trcorner": hline,  # LineBox bug?
+            "tline": tline,
+            "bline": bline,
+            "trcorner": tline,
             "rline": "",
-            "brcorner": hline,  # LineBox bug?
+            "brcorner": bline,
         }
         if index == 0:
-            left = "┏┃┺" if is_active else "┌│┴"
+            left = "┏┃┛" if is_active else "┌│┷"
         else:
             if is_active:
-                left = "┲┃┺"
+                left = "┲┃┛"
             elif index - 1 == self._current:
-                left = "┱┃┹"
+                left = "┱┃┗"
             else:
-                left = "┬│┴"
+                left = "┬│┷"
         args["tlcorner"], args["lline"], args["blcorner"] = left
         if is_last:
-            right = "┓┃┹" if is_active else "┐│┴"
+            right = "┓┃┗" if is_active else "┐│┷"
             args["trcorner"], args["rline"], args["brcorner"] = right
         widget: Widget = Button(
             label,
